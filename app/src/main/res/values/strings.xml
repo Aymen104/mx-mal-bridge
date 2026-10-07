@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MX-MAL Bridge</string>
+    <string name="a11y_desc">MX-MAL Bridge reads MX Player list rows (file title, NEW badge, last-played label) and screen-captures the list once to detect Finished rows, so your watch status can be synced to MyAnimeList. It never taps, types, scrolls, or changes anything inside MX Player.</string>
+</resources>

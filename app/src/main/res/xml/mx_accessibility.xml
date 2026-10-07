@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Registration card only: Android refuses to bind an accessibility service
+     without this resource, and window-content / screenshot capabilities have
+     no code API - they must be declared here. Everything behavioral (which
+     packages, which events, flags, timeout) is set from Java in
+     MxService.configureServiceInfo(). -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/a11y_desc" />

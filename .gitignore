@@ -1,0 +1,23 @@
+# Gradle / Android build
+.gradle/
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# Machine-specific SDK path (each dev generates their own)
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# APK artifacts are published via GitHub Releases, not committed
+*.apk
+*.ap_
+*.aab
