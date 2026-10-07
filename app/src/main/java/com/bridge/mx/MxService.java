@@ -7,6 +7,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -579,7 +580,10 @@ public class MxService extends AccessibilityService {
                     .setContentIntent(pi)
                     .setOngoing(true)
                     .setOnlyAlertOnce(true);
-            notifMgr.notify(NOTIFY_ID, b.build());
+            boolean notifOk = Build.VERSION.SDK_INT < 33
+                    || checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                       == PackageManager.PERMISSION_GRANTED;
+            if (notifOk) notifMgr.notify(NOTIFY_ID, b.build());
         } catch (Throwable t) {
             Report.err("notify", "status notification failed", t);
         }
