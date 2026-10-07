@@ -31,14 +31,17 @@ public class EpisodeParser {
     private static final Pattern SPACES = Pattern.compile("\\s{2,}");
 
     // Episode patterns, most specific first.
+    // Lookbehind excludes letters AND digits (not underscore): filenames use
+    // "_EP_12" where \b would fail after '_', and a trailing (?!\d) keeps the
+    // full number when followed by '_' (e.g. "S01E02_extra").
     private static final Pattern ARABIC =
             Pattern.compile("الحلقة\\s*[-_.]?\\s*(\\d{1,4})");
     private static final Pattern EPISODE =
-            Pattern.compile("(?i)\\bepisode\\s*[-_.]?\\s*(\\d{1,4})\\b");
+            Pattern.compile("(?i)(?<![A-Za-z0-9])episode\\s*[-_.]?\\s*(\\d{1,4})(?!\\d)");
     private static final Pattern EP =
-            Pattern.compile("(?i)\\bEP\\s*[-_.]?\\s*(\\d{1,4})\\b");
+            Pattern.compile("(?i)(?<![A-Za-z0-9])EP\\s*[-_.]?\\s*(\\d{1,4})(?!\\d)");
     private static final Pattern SXXEYY =
-            Pattern.compile("(?i)\\bS(\\d{1,2})\\s*[-_.]?\\s*E(\\d{1,3})\\b");
+            Pattern.compile("(?i)(?<![A-Za-z0-9])S(\\d{1,2})\\s*[-_.]?\\s*E(\\d{1,3})(?!\\d)");
     private static final Pattern TRAIL =
             Pattern.compile("[-\u2013]\\s*(\\d{1,3})\\s*$");
     private static final Pattern LEAD =

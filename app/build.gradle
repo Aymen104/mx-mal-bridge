@@ -27,4 +27,7 @@ android {
 }
 
 dependencies {
+    // Pre-install test suite (pure JVM: parser, matcher, planner)
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }
