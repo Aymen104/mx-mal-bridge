@@ -7,9 +7,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -60,6 +62,20 @@ public class Store {
         return new ArrayList<>(rows.values());
     }
 
+    /** Drop all observed rows (test/maintenance helper; listeners untouched). */
+    public static synchronized void clear() {
+        rows.clear();
+    }
+
+    /** Remove library rows (key prefix "lib:") not seen in the latest scan. */
+    public static synchronized void sweepLib(Set<String> keep) {
+        Iterator<Map.Entry<String, Row>> it = rows.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Row> e = it.next();
+            if (e.getKey().startsWith("lib:") && !keep.contains(e.getKey())) it.remove();
+        }
+    }
+
     /** Insert or refresh a row observed from the live MX list. */
     public static synchronized void upsert(Row r) {
         Row old = rows.get(r.key);
@@ -72,8 +88,12 @@ public class Store {
                 r.state = old.state;
             }
             if (r.rgb < 0) r.rgb = old.rgb;
-            // Keep derived data unless the source title changed.
-            if (r.title.equals(old.title)) {
+            // Keep derived data unless the source title changed. Library rows are
+            // keyed on the parsed series, so a newer (higher) episode filename
+            // must not invalidate an existing MAL match.
+            boolean sameSeries = r.title.equals(old.title)
+                    || (!r.parsedTitle.isEmpty() && r.parsedTitle.equals(old.parsedTitle));
+            if (sameSeries) {
                 r.parsedTitle = old.parsedTitle;
                 r.ep = old.ep;
                 r.matchId = old.matchId;

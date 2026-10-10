@@ -8,7 +8,7 @@ android {
 
     defaultConfig {
         applicationId "com.bridge.mx"
-        minSdk 21
+        minSdk 24
         targetSdk 34
         versionCode 1
         versionName "1.0"
@@ -30,4 +30,10 @@ dependencies {
     // Pre-install test suite (pure JVM: parser, matcher, planner)
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
+
+    // On-device LLM (grounded match fallback). 0.10.21 is the last release
+    // whose classes are Java 8 bytecode (0.10.22+ are Java 21 and cannot be
+    // read by this project's JDK 17 javac). It still exposes the Java API we
+    // need, including setPreferredBackend(CPU). Maintenance-mode API.
+    implementation 'com.google.mediapipe:tasks-genai:0.10.21'
 }

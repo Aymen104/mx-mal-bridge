@@ -22,8 +22,15 @@ import android.widget.TextView;
 
 import org.json.JSONArray;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -42,10 +49,16 @@ public class MainActivity extends Activity implements Store.Listener {
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
     private Handler ui;
 
+    /** Small on-device model used as a grounded match fallback. */
+    private static final String MODEL_URL =
+            "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/"
+                    + "Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Store.init(this);
+        AliasStore.load(this);
         ui = new Handler(getMainLooper());
         buildUi();
 
@@ -60,10 +73,21 @@ public class MainActivity extends Activity implements Store.Listener {
             }
         }
 
+        // Video library read permission (used by the MediaStore library scan).
+        if (!LibraryScanner.canRead(this)) {
+            SharedPreferences cfg = getSharedPreferences("cfg", MODE_PRIVATE);
+            if (!cfg.getBoolean("asked_media", false)) {
+                cfg.edit().putBoolean("asked_media", true).apply();
+                requestMediaPermission();
+            }
+        }
+
         say("MX-MAL Bridge v1 - declared made with AI (see README).");
         say("Flow: open MX list > Scan > Colors > Plan > Match > Apply.");
         say("Background: service auto-scans MX; network sync every "
                 + (MxService.PIPELINE_PERIOD_MS / 60000) + " min. Auto toggle = live writes.");
+        say("AI: grounded fallback, runs ONLY on unmatched titles. Tap AI to load a small"
+                + " on-device model (optional; app works without it).");
         say("Errors: " + safeReportPath());
         refreshStatus();
     }
@@ -93,12 +117,14 @@ public class MainActivity extends Activity implements Store.Listener {
         strip.setOrientation(LinearLayout.HORIZONTAL);
         strip.addView(btn("Login", v -> doLogin()));
         strip.addView(btn("Scan", v -> doScan()));
+        strip.addView(btn("Lib", v -> doLibScan()));
         strip.addView(btn("Colors", v -> doColors()));
         strip.addView(btn("Match", v -> doMatch()));
         strip.addView(btn("Plan", v -> doPlan()));
         strip.addView(btn("Apply", v -> doApply()));
         btnAuto = btn("Auto: off", v -> doAuto());
         strip.addView(btnAuto);
+        strip.addView(btn("AI", v -> doAi()));
         hs.addView(strip, lp(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(hs, lp(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -184,6 +210,92 @@ public class MainActivity extends Activity implements Store.Listener {
         refreshStatus();
     }
 
+    private void doAi() {
+        final LlmBrain brain = LlmBrain.get(this);
+        if (brain.ready()) {
+            say("AI: local model loaded and ready (grounded match fallback).");
+            refreshStatus();
+            return;
+        }
+        if (LlmBrain.hasModel(this)) {
+            say("AI: model found on device, loading (CPU, may take ~30s)...");
+            exec.execute(() -> {
+                brain.ensureLoaded();
+                say("AI: " + brain.status());
+                onChanged();
+            });
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Download local AI model?")
+                .setMessage("Qwen2.5-0.5B-Instruct (~521 MB) is downloaded to app storage "
+                        + "and used only as a grounded fallback when title matching is "
+                        + "ambiguous. Wi-Fi recommended. The app works without it.")
+                .setPositiveButton("Download", (d, w) -> downloadModel())
+                .setNegativeButton("Cancel", (d, w) -> say("AI: kept deterministic matcher."))
+                .show();
+    }
+
+    private void downloadModel() {
+        say("AI: downloading model (~521 MB)...");
+        exec.execute(() -> {
+            File f = LlmBrain.modelFile(MainActivity.this);
+            File dir = f.getParentFile();
+            if (dir != null && !dir.exists()) dir.mkdirs();
+            File tmp = new File(dir, "model.task.part");
+            HttpURLConnection c = null;
+            InputStream in = null;
+            OutputStream out = null;
+            try {
+                c = (HttpURLConnection) new URL(MODEL_URL).openConnection();
+                c.setInstanceFollowRedirects(true);
+                c.setConnectTimeout(30000);
+                c.setReadTimeout(60000);
+                c.connect();
+                long total = c.getContentLengthLong();
+                in = c.getInputStream();
+                out = new FileOutputStream(tmp);
+                byte[] buf = new byte[1 << 16];
+                long got = 0, last = 0;
+                int r;
+                while ((r = in.read(buf)) > 0) {
+                    out.write(buf, 0, r);
+                    got += r;
+                    if (got - last > (25L << 20)) {
+                        last = got;
+                        say("AI: " + (got >> 20) + " MB"
+                                + (total > 0 ? " / " + (total >> 20) + " MB" : ""));
+                    }
+                }
+                out.close();
+                out = null;
+                if (f.exists() && !f.delete()) {
+                    say("AI: could not replace old model file.");
+                }
+                if (!tmp.renameTo(f)) {
+                    say("AI: rename failed.");
+                }
+                say("AI: download complete, loading model...");
+                LlmBrain.get(MainActivity.this).ensureLoaded();
+                say("AI: " + LlmBrain.get(MainActivity.this).status());
+            } catch (Throwable t) {
+                Report.err("ai", "model download failed", t);
+                say("AI: download failed: " + t.getMessage());
+            } finally {
+                try {
+                    if (out != null) out.close();
+                } catch (Exception ignored) {
+                }
+                try {
+                    if (in != null) in.close();
+                } catch (Exception ignored) {
+                }
+                if (c != null) c.disconnect();
+            }
+            onChanged();
+        });
+    }
+
     private void doLogin() {
         if (MalClient.hasSession(this)) {
             say("Already logged in (Clear app data to sign out).");
@@ -221,6 +333,32 @@ public class MainActivity extends Activity implements Store.Listener {
         say("Scan: " + Store.all().size() + " rows read from MX (read-only).");
     }
 
+    private void doLibScan() {
+        if (!LibraryScanner.canRead(this)) {
+            requestMediaPermission();
+            say("Library scan: grant video access, then tap Lib again (or it is auto-granted).");
+            return;
+        }
+        say("Library scan: reading device videos (MediaStore, read-only)...");
+        exec.execute(() -> {
+            int n = LibraryScanner.scan(MainActivity.this);
+            Planner.rebuild();
+            Store.save();
+            onChanged();
+            say("Library scan: " + n + " anime series found on device."
+                    + " Use Match then Plan to preview.");
+        });
+    }
+
+    private void requestMediaPermission() {
+        String perm = Build.VERSION.SDK_INT >= 33
+                ? "android.permission.READ_MEDIA_VIDEO"
+                : android.Manifest.permission.READ_EXTERNAL_STORAGE;
+        if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{perm}, 102);
+        }
+    }
+
     private void doColors() {
         MxService s = MxService.get();
         if (s == null) {
@@ -254,13 +392,16 @@ public class MainActivity extends Activity implements Store.Listener {
             int ok = 0, miss = 0;
             for (final Store.Row r : targets) {
                 try {
-                    JSONArray data = MalClient.search(MainActivity.this, r.parsedTitle);
-                    Matcher.Result b = Matcher.best(data, r.parsedTitle);
+                    String query = Aliases.apply(r.parsedTitle);
+                    JSONArray data = MalClient.search(MainActivity.this, query);
+                    Matcher.Result b = Matcher.bestWithBrain(data, query, r.ep,
+                            LlmBrain.get(MainActivity.this));
                     r.matchTried = r.parsedTitle;
                     if (b != null) {
                         r.matchId = b.id;
                         r.matchTitle = b.title;
                         r.numEp = b.numEp;
+                        Aliases.learn(r.parsedTitle, b.title);
                         ok++;
                         say("match: '" + r.parsedTitle + "' -> " + b.title + " (" + b.id
                                 + (b.numEp > 0 ? ", " + b.numEp + " eps" : "") + ")");
@@ -280,6 +421,7 @@ public class MainActivity extends Activity implements Store.Listener {
             }
             Planner.rebuild(); // plans can now use num_episodes
             Store.save();
+            AliasStore.persist(MainActivity.this);
             onChanged();
             say("Match done: " + ok + " ok, " + miss + " missed.");
         });
@@ -309,7 +451,9 @@ public class MainActivity extends Activity implements Store.Listener {
         int unmatched = 0;
         for (Store.Row r : Store.all()) {
             if (r.planStatus.isEmpty()) continue;
-            if (r.matchId > 0) q.add(r);
+            boolean safe = r.matchId > 0
+                    && !("completed".equals(r.planStatus) && r.planEps < 0);
+            if (safe) q.add(r);
             else unmatched++;
         }
         if (q.isEmpty()) {
@@ -335,11 +479,26 @@ public class MainActivity extends Activity implements Store.Listener {
     private void runApply(final List<Store.Row> q) {
         say("Applying " + q.size() + " change(s)...");
         exec.execute(() -> {
-            int ok = 0, err = 0;
+            Map<Integer, String> cur = null;
+            try {
+                cur = MalClient.myListStatus(MainActivity.this);
+            } catch (Exception e) {
+                Report.err("apply", "MAL list guard unavailable", e);
+            }
+            int ok = 0, err = 0, held = 0;
             for (final Store.Row r : q) {
+                String sig = r.planStatus + "|" + r.planEps;
+                if (cur != null && Planner.wouldDowngrade(cur.get(r.matchId),
+                        r.planStatus, r.planEps)) {
+                    r.applied = sig; // remember it; never retry this downgrade
+                    held++;
+                    Store.save();
+                    say("\u21ba " + shortName(r.title) + ": kept MAL value (would downgrade)");
+                    continue;
+                }
                 try {
                     MalClient.updateStatus(MainActivity.this, r.matchId, r.planStatus, r.planEps);
-                    r.applied = r.planStatus + "|" + r.planEps; // background won't re-push
+                    r.applied = sig; // background won't re-push
                     Store.save();
                     ok++;
                     say("\u2713 " + shortName(r.title) + " -> " + r.planStatus
@@ -355,7 +514,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 }
             }
             Store.notifyChanged();
-            say("Apply done: " + ok + " ok, " + err + " failed.");
+            say("Apply done: " + ok + " ok, " + err + " failed, " + held + " held.");
         });
     }
 
@@ -383,6 +542,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 + " | MAL " + (MalClient.hasSession(this) ? "in" : "out")
                 + " | planned " + planned
                 + " | auto " + (Store.autoApply() ? "ON" : "off")
+                + " | ai " + LlmBrain.get(this).status()
                 + sync);
         btnAuto.setText(Store.autoApply() ? "Auto: ON" : "Auto: off");
     }

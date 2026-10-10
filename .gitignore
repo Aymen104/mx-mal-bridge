@@ -21,3 +21,7 @@ Thumbs.db
 *.apk
 *.ap_
 *.aab
+
+# Local build/test logs
+build.log
+test.log

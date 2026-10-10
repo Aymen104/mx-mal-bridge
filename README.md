@@ -26,7 +26,7 @@ The installable APK is published on the **[Releases](../../releases)** page:
   install ("allow unknown sources"), or sideload with
   `adb install mx-mal-bridge-v*.apk`.
 
-Works on **any phone, Android 5.0+ (API 21)**, with MX Player **Free** or
+Works on **any phone, Android 7.0+ (API 24)**, with MX Player **Free** or
 **Pro**.
 
 ## Interface
@@ -34,8 +34,8 @@ Works on **any phone, Android 5.0+ (API 21)**, with MX Player **Free** or
 The app **has a full interface** — and every view of it is built from code
 (no layout XML anywhere):
 
-- status line (rows / service / MAL login / planned / auto / next-sync timer)
-- button strip: **Login · Scan · Colors · Match · Plan · Apply · Auto**
+- status line (rows / service / MAL login / planned / auto / ai / next-sync timer)
+- button strip: **Login · Scan · Lib · Colors · Match · Plan · Apply · Auto · AI**
 - observed-episode list with state, episode, MAL match and planned action
 - scrolling log; every error is also persisted (see below)
 
@@ -77,8 +77,9 @@ the background service may write anything on its own.
 - It re-reads the MX list automatically on every MX UI change (instant,
   local, read-only).
 - Network work (MAL search for newly seen titles + optional auto-apply) runs
-  on a **~20 minute cadence**, at most 4 new matches per tick, with dedupe so
-  nothing is searched or pushed twice.
+  on a **~24 minute cadence**, at most 40 new matches per tick, with dedupe so
+  nothing is searched or pushed twice. Already-matched titles are skipped, so
+  the on-device LLM only ever sees the unmatched leftovers.
 - A low-priority status notification shows rows / planned / auto / countdown
   to the next sync.
 
@@ -101,19 +102,44 @@ Readable over `adb shell cat` (external files dir, no root / run-as needed).
    `localhost:8585`.
 2. Open the MX Player file list — rows are captured automatically (or tap
    **Scan**).
-3. **Colors** — one screenshot classifies label-less rows (API 30+; light
+3. **Lib** — scans **built-in storage only** (MediaStore, read-only) for
+   episode files and reads the episode number from each filename. The SD card
+   is intentionally ignored.
+4. **Colors** — one screenshot classifies label-less rows (API 30+; light
    theme calibrated).
-4. **Plan** — parses titles (`الحلقة X`, `EP 06`, `SxxEyy`, trailing ` - 12`),
+5. **Plan** — parses titles (`الحلقة X`, `EP 06`, `SxxEyy`, trailing ` - 12`),
    prints planned MAL writes. Nothing is sent.
-5. **Match** — MAL search per unique title (levenshtein + containment
-   scoring, cached).
-6. **Apply** — confirmation dialog, then rate-limited writes (~700 ms apart) —
-   or enable **Auto** for background sync.
+6. **Match** — MAL search per unique title. Scoring combines edit distance,
+   whole-string containment and token overlap, penalises entries whose episode
+   count is below the highest episode seen (`Gin S1` **EP 48** → the 201-ep
+   *Gintama*, never a 12-ep special), and consults a shorthand alias table
+   (`Gin S1` → *Gintama*). Titles that stay unmatched are offered to the
+   optional on-device LLM (see below).
+7. **Apply** — confirmation dialog, then rate-limited writes (~700 ms apart) —
+   or enable **Auto** for background sync. The user's current MAL list is
+   snapshotted first, so a write can never downgrade a manual completion or
+   lower a watched count.
+
+## On-device AI match fallback (optional)
+
+`Match` and the background tick first run the deterministic matcher. Only when
+a title is **not matched confidently** is a small local LLM consulted, and it
+may only pick from the real candidates MyAnimeList returned — it can never
+invent an id. Successful picks are remembered as aliases.
+
+- Model: **Qwen2.5-0.5B-Instruct**, Apache-2.0, run fully on the phone via
+  MediaPipe LLM Inference on CPU. It is **not bundled** in the APK.
+- Nothing is downloaded automatically. Tap **AI** to download it (~521 MB) or
+  side-load it to `Android/data/com.bridge.mx/files/llm/model.task`.
+- **Without the model everything still works** — the app silently falls back to
+  the deterministic matcher, and the status line shows `ai no model`.
 
 ## Build
 
-Plain Gradle project — Java only, zero dependencies (AGP 8.7.0, JDK 17,
-SDK 34). No wrapper committed:
+Plain Gradle project — Java only (AGP 8.7.0, JDK 17, SDK 34). The only runtime
+dependency is MediaPipe LLM Inference
+`com.google.mediapipe:tasks-genai:0.10.21` — pinned because 0.10.22+ ship Java
+21 class files that JDK 17 javac cannot read. No wrapper committed:
 
 ```powershell
 # local.properties must contain: sdk.dir=<your Android SDK path>
@@ -135,12 +161,16 @@ Enable once: **Settings ▸ Accessibility ▸ MX-MAL Bridge ▸ On**.
 
 ## Files
 
-- `MxService.java` — read-only observer, screenshot classifier, 20-min
+- `MxService.java` — read-only observer, screenshot classifier, 24-min
   background pipeline, status notification, runtime service config
 - `MainActivity.java` — code-only interface, manual workflow, confirm-and-apply
+- `LibraryScanner.java` — built-in-storage MediaStore scan (SD card excluded)
 - `EpisodeParser.java` — filename → title + episode
 - `Planner.java` — state + episode + match → planned MAL write (dry-run)
-- `Matcher.java` — MyAnimeList search-result scoring
+- `Matcher.java` — deterministic MAL search-result scoring + score ranking
+- `Aliases.java` / `AliasStore.java` — shorthand alias table + persistence
+- `MatchBrain.java` / `LlmBrain.java` / `Grounding.java` — grounded on-device
+  LLM fallback (prompt, parsing, MediaPipe engine)
 - `MalClient.java` — PKCE login, token refresh, search, status update
 - `Store.java` — row persistence (SharedPreferences), change listeners
 - `Report.java` / `BridgeApp.java` — error reports + uncaught-exception capture

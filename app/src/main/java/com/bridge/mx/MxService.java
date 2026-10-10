@@ -28,6 +28,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -43,7 +44,7 @@ import java.util.concurrent.Executors;
  *     blue (103,125,179) = Last played, dim (167,149,132) = Finished,
  *     dark (123,105,101) = normal (no label)
  *
- * Network channel (background, ~20 minute cadence):
+ * Network channel (background, ~24 minute cadence):
  *   collect -> parse -> MAL search for new titles -> plan -> auto-apply ONLY
  *   if the user enabled Auto (default off = dry-run).
  *
@@ -57,7 +58,7 @@ public class MxService extends AccessibilityService {
                 || "com.mxtech.videoplayer.pro".equals(pkg);
     }
     /** Search cadence for newly seen info. */
-    public static final long PIPELINE_PERIOD_MS = 20 * 60 * 1000L;
+    public static final long PIPELINE_PERIOD_MS = 24 * 60 * 1000L;
     private static final String TAG = "MxService";
     private static final String CH = "mxbridge_status";
     private static final int NOTIFY_ID = 1001;
@@ -106,6 +107,7 @@ public class MxService extends AccessibilityService {
         super.onServiceConnected();
         instance = this;
         Store.init(this);
+        AliasStore.load(this);
         configureServiceInfo(); // interaction with other apps = code only
         Report.info("service", "accessibility service connected");
         updateNotification(null);
@@ -221,7 +223,7 @@ public class MxService extends AccessibilityService {
     }
 
     private Store.Row readRow(AccessibilityNodeInfo item) {
-        String title = null, badge = null, played = null, dur = null, status = null;
+        String title = null, badge = null, played = null, dur = null, status = null, count = null;
         Rect tb = null;
 
         Deque<AccessibilityNodeInfo> st = new ArrayDeque<>();
@@ -256,6 +258,11 @@ public class MxService extends AccessibilityService {
                         if (t != null) status = t;
                         else if (cd != null) status = cd;
                         break;
+                    case "count":
+                        // Only folder rows expose a "N videos" count node.
+                        if (t != null) count = t;
+                        else if (cd != null) count = cd;
+                        break;
                 }
             }
             for (int i = 0; i < n.getChildCount(); i++) {
@@ -264,6 +271,11 @@ public class MxService extends AccessibilityService {
             }
         }
         if (title == null) return null;
+
+        // Folder rows (Download, Movies, ...) carry a "count" node ("N videos")
+        // and are NOT watchable episodes. Skip them entirely so a folder's name
+        // can never be matched to an anime or pushed to MAL.
+        if (count != null && !count.isEmpty()) return null;
 
         Store.Row r = new Store.Row();
         r.key = title + "|" + (dur == null ? "" : dur);
@@ -462,7 +474,7 @@ public class MxService extends AccessibilityService {
             try {
                 runPipeline();
             } finally {
-                armNext(PIPELINE_PERIOD_MS); // ~20 min until the next search
+                armNext(PIPELINE_PERIOD_MS); // ~24 min until the next search
             }
         });
     }
@@ -475,46 +487,114 @@ public class MxService extends AccessibilityService {
     private void runPipeline() {
         try {
             collect("tick");
+            int lib = 0;
+            if (LibraryScanner.canRead(this)) {
+                lib = LibraryScanner.scan(this);
+            }
             Planner.rebuild();
             boolean loggedIn = MalClient.hasSession(this);
             boolean auto = Store.autoApply();
             int matched = 0;
 
             if (loggedIn) {
+                // One MAL search per distinct parsed title (a series has many
+                // files); assign the result to every row carrying that title.
+                Map<String, List<Store.Row>> byTitle = new LinkedHashMap<>();
                 for (Store.Row r : Store.all()) {
-                    if (matched >= 4) break; // keep each tick light
                     if (!actionable(r) || r.matchId >= 0 || r.parsedTitle.isEmpty()) continue;
-                    if (r.parsedTitle.equals(r.matchTried)) continue;
+                    List<Store.Row> grp = byTitle.get(r.parsedTitle);
+                    if (grp == null) {
+                        grp = new ArrayList<>();
+                        byTitle.put(r.parsedTitle, grp);
+                    }
+                    grp.add(r);
+                }
+                int attempts = 0;
+                for (Map.Entry<String, List<Store.Row>> e : byTitle.entrySet()) {
+                    if (attempts >= 40) break; // keep each tick bounded
+                    String title = e.getKey();
+                    List<Store.Row> grp = e.getValue();
+                    boolean tried = false;
+                    for (Store.Row r : grp) {
+                        if (title.equals(r.matchTried)) {
+                            tried = true;
+                            break;
+                        }
+                    }
+                    if (tried) continue;
+                    attempts++;
+                    String query = Aliases.apply(title);
+                    int groupEp = -1;
+                    for (Store.Row r : grp) {
+                        if (r.ep > groupEp) groupEp = r.ep;
+                    }
                     try {
-                        JSONArray data = MalClient.search(this, r.parsedTitle);
-                        Matcher.Result b = Matcher.best(data, r.parsedTitle);
-                        r.matchTried = r.parsedTitle;
+                        JSONArray data = MalClient.search(this, query);
+                        Matcher.Result b = Matcher.bestWithBrain(data, query, groupEp,
+                                LlmBrain.get(this));
+                        for (Store.Row r : grp) r.matchTried = title;
                         if (b != null) {
-                            r.matchId = b.id;
-                            r.matchTitle = b.title;
-                            r.numEp = b.numEp;
-                            matched++;
-                            Log.i(TAG, "matched '" + r.parsedTitle + "' -> " + b.title);
+                            for (Store.Row r : grp) {
+                                r.matchId = b.id;
+                                r.matchTitle = b.title;
+                                r.numEp = b.numEp;
+                            }
+                            Aliases.learn(title, b.title);
+                            AliasStore.persist(this);
+                            matched += grp.size();
+                            Log.i(TAG, "matched '" + title + "' -> " + b.title);
                         }
                         Thread.sleep(500);
                     } catch (InterruptedException ie) {
                         break;
                     } catch (Throwable t) {
-                        Report.err("sync.match", "search failed for '" + r.parsedTitle + "'", t);
+                        Report.err("sync.match", "search failed for '" + title + "'", t);
                     }
                 }
                 Planner.rebuild(); // plans can now use num_episodes
             }
 
-            int applied = 0;
+            int applied = 0, held = 0;
             if (auto && loggedIn) {
+                // Snapshot the user's current MAL list once, so a file-based
+                // estimate can never walk a manual completion or a higher
+                // episode count backwards.
+                Map<Integer, String> cur = null;
+                try {
+                    cur = MalClient.myListStatus(this);
+                } catch (Throwable t) {
+                    Report.err("sync.apply", "MAL list guard unavailable this tick", t);
+                }
                 for (Store.Row r : Store.all()) {
-                    if (!actionable(r) || r.planStatus.isEmpty() || r.matchId < 0) continue;
+                    if (!actionable(r) || !pushable(r)) continue;
                     String sig = r.planStatus + "|" + r.planEps;
-                    if (sig.equals(r.applied)) continue;
+                    String mal = cur == null ? null : cur.get(r.matchId);
+                    // "mal" is exactly what WE last wrote, but the plan moved on
+                    // (e.g. a presence-era "completed" that MX evidence now
+                    // walks back): correcting it is safe AND required. The stale
+                    // signature may sit on a sibling row of the same series, so
+                    // the check is group-scoped, not just this row.
+                    boolean ownStaleLive = mal != null && !mal.equals(sig)
+                            && groupAppliedEquals(mal, r.matchId);
+                    if (sig.equals(r.applied) && !ownStaleLive) continue; // in sync
+
+                    if (mal != null && !ownStaleLive
+                            && Planner.wouldDowngrade(mal, r.planStatus, r.planEps)) {
+                        // A manual user edit or a higher MAL count: never walk
+                        // it backwards (remember it so we do not retry).
+                        r.applied = sig;
+                        held++;
+                        continue;
+                    }
+                    if (ownStaleLive) {
+                        Report.info("sync.apply", "correcting own stale write: "
+                                + r.title + " " + mal + " -> " + sig);
+                    }
                     try {
                         MalClient.updateStatus(this, r.matchId, r.planStatus, r.planEps);
-                        r.applied = sig;
+                        for (Store.Row o : Store.all()) {
+                            if (o.matchId == r.matchId) o.applied = sig;
+                        }
                         applied++;
                         Report.info("sync.apply", r.title + " -> " + sig);
                         Store.save();
@@ -530,8 +610,9 @@ public class MxService extends AccessibilityService {
             Store.save();
             Store.notifyChanged();
             updateNotification(null);
-            if (matched > 0 || applied > 0) {
-                Report.info("sync", "tick: matched=" + matched + " applied=" + applied
+            if (matched > 0 || applied > 0 || held > 0 || lib > 0) {
+                Report.info("sync", "tick: lib=" + lib + " matched=" + matched
+                        + " applied=" + applied + " held=" + held
                         + (auto ? "" : " (auto off - dry-run)"));
             }
         } catch (Throwable t) {
@@ -541,6 +622,28 @@ public class MxService extends AccessibilityService {
 
     private static boolean actionable(Store.Row r) {
         return !("unknown".equals(r.state) || "none".equals(r.state));
+    }
+
+    /**
+     * Safe to push to MAL: there must be a real match, and a "completed" mark
+     * must carry a concrete episode count. This blocks the old bug where a row
+     * with no episode number was sent as "completed" (MAL shows 0/0).
+     */
+    private static boolean pushable(Store.Row r) {
+        if (r.planStatus.isEmpty() || r.matchId <= 0) return false;
+        if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
+        return true;
+    }
+
+    /**
+     * Any row of the same series still holding the given applied signature
+     * (our own previous write, possibly on a now-non-actionable row).
+     */
+    private static boolean groupAppliedEquals(String mal, int matchId) {
+        for (Store.Row o : Store.all()) {
+            if (o.matchId == matchId && mal.equals(o.applied)) return true;
+        }
+        return false;
     }
 
     // ---------------------------------------------------------- notification

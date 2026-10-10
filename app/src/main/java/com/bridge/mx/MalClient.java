@@ -38,6 +38,8 @@ import java.util.Map;
 public class MalClient {
 
     public static final String CLIENT_ID = "4a2616916ea55dd75b7ad461bea38b08";
+    // DailyAL's registered MAL client secret (confidential client - MAL 401s without it)
+    public static final String CLIENT_SECRET = "eda146d87caf3408468d0b1b8dd6d84bad3ae5522a4597c495496e743a38bbce";
     public static final String REDIRECT = "http://localhost:8585/callback";
     private static final String AUTHORIZE = "https://myanimelist.net/v1/oauth2/authorize";
     private static final String TOKEN_URL = "https://myanimelist.net/v1/oauth2/token";
@@ -147,7 +149,7 @@ public class MalClient {
         try {
             Map<String, String> form = new HashMap<>();
             form.put("client_id", CLIENT_ID);
-            form.put("client_secret", "");
+            form.put("client_secret", CLIENT_SECRET);
             form.put("grant_type", "authorization_code");
             form.put("code", code);
             form.put("code_verifier", verifier);
@@ -180,7 +182,7 @@ public class MalClient {
         try {
             Map<String, String> form = new HashMap<>();
             form.put("client_id", CLIENT_ID);
-            form.put("client_secret", "");
+            form.put("client_secret", CLIENT_SECRET);
             form.put("grant_type", "refresh_token");
             form.put("redirect_uri", REDIRECT);
             form.put("refresh_token", refresh);
@@ -224,9 +226,66 @@ public class MalClient {
 
     /** Top search results for a query (needs login). */
     public static JSONArray search(Context c, String q) throws Exception {
-        String path = "anime?q=" + URLEncoder.encode(q, "UTF-8")
-                + "&limit=10&fields=id,title,num_episodes,alternative_titles";
+        String query = cleanQuery(q);
+        if (query.isEmpty()) return null;
+        // nsfw=true is required: without it MAL hides flagged titles from the
+        // search index entirely (e.g. "Ayakashi Triangle" returns 0 results).
+        String path = "anime?q=" + URLEncoder.encode(query, "UTF-8")
+                + "&nsfw=true&limit=10&fields=id,title,num_episodes,alternative_titles,"
+                + "media_type,status";
         return getJson(c, path).optJSONArray("data");
+    }
+
+    /**
+     * MAL rejects a "q" longer than 64 chars (HTTP 400 "invalid q"), and the
+     * device filenames carry release-group / site / quality noise that makes
+     * the search miss. Strip that noise and hard-cap the length.
+     */
+    private static String cleanQuery(String q) {
+        if (q == null) return "";
+        String s = q;
+        // release-tag noise (dotted or spaced)
+        s = s.replaceAll("(?i)\\b(uncensored|adn|jpn|msub\\w*|toonshub|subsplease|"
+                + "erai|judas|horriblesubs|web-?dl|blu-?ray|bd|amzn|cr|funimation|"
+                + "aac[0-9.]*|ac3|eac3|x26[45]|h\\.?26[45]|hevc|avc|vp[89]|"
+                + "10bit|8bit|hdr|proper|repack|dual|audio|multi|subs?)\\b", " ");
+        // quality / state noise that is not part of a title
+        s = s.replaceAll("(?i)\\b(end|sd|fhd|uhd|hd|source)\\b", " ");
+        // site junk + arabic "translated online" tails
+        s = s.replaceAll("(?i)\\s*[-–|]\\s*(blkom|www\\.[a-z0-9.-]+).*$", " ");
+        s = s.replaceAll("(مترجم\\s*)?(أون|اون)\\s*لاين.*$", " ");
+        s = s.replaceAll("(?i)(blkom|\\.co|\\.com|\\.net).*$", " ");
+        // leftover separators / duplicate markers
+        s = s.replaceAll("[()\\[\\]{}._★☆]", " ");
+        s = s.replaceAll("\\s{2,}", " ").replaceAll("[\\s\\-–_.|!]+$", "").trim();
+        if (s.length() > 64) s = s.substring(0, 64).trim();
+        return s;
+    }
+
+    /**
+     * The user's whole list as animeId -> "status|num_watched". Used before an
+     * apply so a file-based estimate can never walk a manual completion (or a
+     * higher episode count) backwards.
+     */
+    public static Map<Integer, String> myListStatus(Context c) throws Exception {
+        Map<Integer, String> out = new HashMap<>();
+        for (int offset = 0; offset < 6000; offset += 300) {
+            JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
+                    + offset + "&fields=list_status");
+            JSONArray data = j.optJSONArray("data");
+            if (data == null) break;
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject o = data.getJSONObject(i);
+                JSONObject node = o.optJSONObject("node");
+                JSONObject ls = o.optJSONObject("list_status");
+                if (node == null || ls == null) continue;
+                out.put(node.optInt("id", -1),
+                        ls.optString("status", "") + "|"
+                                + ls.optInt("num_episodes_watched", 0));
+            }
+            if (data.length() < 300) break;
+        }
+        return out;
     }
 
     public static String me(Context c) throws Exception {
