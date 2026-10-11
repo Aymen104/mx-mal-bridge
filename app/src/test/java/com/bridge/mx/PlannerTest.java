@@ -1,6 +1,7 @@
 package com.bridge.mx;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -34,6 +35,7 @@ public class PlannerTest {
     @Before
     public void reset() {
         Store.clear();
+        Store.setMalCur(null); // clear the persisted MAL snapshot between tests
     }
 
     @Test
@@ -276,6 +278,35 @@ public class PlannerTest {
         // Not on the list / unknown -> allow the write.
         assertEquals(false, Planner.wouldDowngrade(null, "watching", 3));
         assertEquals(false, Planner.wouldDowngrade("bogus", "watching", 3));
+    }
+
+    @Test
+    public void malAheadIsKeptNotLowered() {
+        // Hotaru no Yomeiri (63293): MX shows ep 01 reached -> the raw plan is
+        // "watching, 0" (reached ep1). But the user's MAL already records 1
+        // watched, so the plan must READ MAL's 1 (kept), never walk back to 0.
+        Store.Row r = row("hotaru-1", "Hotaru no Yomeiri EP 01", "watching", 12);
+        r.matchId = 63293;
+        java.util.Map<Integer, String> cur = new java.util.HashMap<>();
+        cur.put(63293, "watching|1");
+        Store.setMalCur(cur);
+        Planner.rebuild();
+        assertEquals("watching", r.planStatus);
+        assertEquals(1, r.planEps);
+        assertTrue(r.planText.contains("kept"));
+    }
+
+    @Test
+    public void malCompletedIsKeptNotLowered() {
+        // MAL completed (manual) must survive a file-based "watching" estimate.
+        Store.Row r = row("done-1", "Done Show EP 01", "watching", 12);
+        r.matchId = 70001;
+        java.util.Map<Integer, String> cur = new java.util.HashMap<>();
+        cur.put(70001, "completed|12");
+        Store.setMalCur(cur);
+        Planner.rebuild();
+        assertEquals("completed", r.planStatus);
+        assertEquals(12, r.planEps);
     }
 
     @Test

@@ -42,6 +42,7 @@ public class Store {
         public String planText = "";
         public String applied = "";    // "status|eps" last pushed to MAL
         public String matchTried = ""; // parsedTitle we already searched for
+        public int watchedPct = -1;    // max % of the episode played in MX (>=95 finished)
     }
 
     public interface Listener {
@@ -51,6 +52,13 @@ public class Store {
     private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private static final Map<String, Row> rows = new LinkedHashMap<>();
     private static SharedPreferences prefs;
+
+    /**
+     * Snapshot of the user's own MAL list (matchId -> "status|eps"), refreshed
+     * each tick. It is the source of truth: a computed plan must never read
+     * LOWER than this, so the bridge only ever advances the user's list.
+     */
+    private static final Map<Integer, String> malCur = new LinkedHashMap<>();
 
     public static void init(Context ctx) {
         if (prefs != null) return;
@@ -88,6 +96,7 @@ public class Store {
                 r.state = old.state;
             }
             if (r.rgb < 0) r.rgb = old.rgb;
+            if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
             // Keep derived data unless the source title changed. Library rows are
             // keyed on the parsed series, so a newer (higher) episode filename
             // must not invalidate an existing MAL match.
@@ -129,6 +138,7 @@ public class Store {
                 o.put("planText", r.planText);
                 o.put("applied", r.applied);
                 o.put("matchTried", r.matchTried);
+                o.put("watchedPct", r.watchedPct);
                 arr.put(o);
             }
             prefs.edit().putString("rows", arr.toString()).apply();
@@ -137,6 +147,20 @@ public class Store {
     }
 
     private static void load() {
+        try {
+            String mc = prefs.getString("malcur", "");
+            if (!mc.isEmpty()) {
+                JSONObject o = new JSONObject(mc);
+                for (Iterator<String> it = o.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    try {
+                        malCur.put(Integer.parseInt(k), o.getString(k));
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
         try {
             String s = prefs.getString("rows", "");
             if (s.isEmpty()) return;
@@ -160,6 +184,7 @@ public class Store {
                 r.planText = o.optString("planText", "");
                 r.applied = o.optString("applied", "");
                 r.matchTried = o.optString("matchTried", "");
+                r.watchedPct = o.optInt("watchedPct", -1);
                 rows.put(r.key, r);
             }
         } catch (Exception ignored) {
@@ -185,5 +210,25 @@ public class Store {
 
     public static void setAutoApply(boolean v) {
         if (prefs != null) prefs.edit().putBoolean("auto_apply", v).apply();
+    }
+
+    /** Replace the stored MAL snapshot (matchId -> "status|eps") and persist it. */
+    public static synchronized void setMalCur(Map<Integer, String> cur) {
+        malCur.clear();
+        if (cur != null) malCur.putAll(cur);
+        if (prefs == null) return;
+        try {
+            JSONObject o = new JSONObject();
+            for (Map.Entry<Integer, String> e : malCur.entrySet()) {
+                o.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            prefs.edit().putString("malcur", o.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Current MAL value for an anime as "status|eps", or null when unknown. */
+    public static synchronized String malCur(int matchId) {
+        return malCur.get(matchId);
     }
 }

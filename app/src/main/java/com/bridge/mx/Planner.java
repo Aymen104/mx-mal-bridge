@@ -67,7 +67,9 @@ public class Planner {
             g.add(r);
         }
 
-        for (List<Store.Row> g : groups.values()) {
+        for (Map.Entry<Integer, List<Store.Row>> gentry : groups.entrySet()) {
+            int groupMatchId = gentry.getKey();
+            List<Store.Row> g = gentry.getValue();
             int malTotal = 0;            // MAL total episodes (0 = unknown/airing)
             int groupMaxEp = 0;          // highest episode number seen in MX
             int series = 0;              // max per-episode contribution
@@ -105,6 +107,27 @@ public class Planner {
                 }
             }
 
+            // Live playback evidence from the Watched ledger: an episode watched
+            // in MX counts even when its file is not (or no longer) in the list.
+            // >=95% -> the episode itself; partial -> the episodes before it.
+            LinkedHashMap<String, Boolean> seriesTitles = new LinkedHashMap<>();
+            for (Store.Row r : g) {
+                if (!r.parsedTitle.isEmpty()) seriesTitles.put(Watched.norm(r.parsedTitle), true);
+            }
+            for (String st : seriesTitles.keySet()) {
+                for (Map.Entry<Integer, Integer> en : Watched.episodes(st).entrySet()) {
+                    int e = en.getKey();
+                    if (e <= 0) continue;
+                    if (e > groupMaxEp) groupMaxEp = e;
+                    int contrib = PlaybackTracker.isFinished(en.getValue())
+                            ? e : Math.max(e - 1, 0);
+                    if (contrib > series) series = contrib;
+                    reachedAny = true;
+                    if (rep == null) rep = g.get(0);
+                    if (contrib > repContrib) repContrib = contrib;
+                }
+            }
+
             if (rep == null) {
                 // No numbered episode at all: an unnumbered "finished" file on a
                 // single-episode MAL entry is a fully watched movie.
@@ -134,6 +157,14 @@ public class Planner {
                         break;
                     }
                 }
+                if (!finalFinished) {
+                    for (String st : seriesTitles.keySet()) {
+                        if (PlaybackTracker.isFinished(Watched.percent(st, finalEp))) {
+                            finalFinished = true;
+                            break;
+                        }
+                    }
+                }
             }
 
             if (malTotal > 0 && finalFinished) {
@@ -153,6 +184,37 @@ public class Planner {
                 rep.planText = "\u2192 planned (0 eps)";
             }
             // else: only unknown/none rows -> planStatus stays "" (skip)
+
+            // MAL is the source of truth: a computed plan must never read lower
+            // than what the user's own list already records. Clamp it (and say
+            // so) so the bridge only ever advances, never walks them backwards.
+            String malNow = Store.malCur(groupMatchId);
+            if (malNow != null) {
+                int bar = malNow.indexOf('|');
+                if (bar > 0) {
+                    String mst = malNow.substring(0, bar);
+                    int mw = -1;
+                    try {
+                        mw = Integer.parseInt(malNow.substring(bar + 1));
+                    } catch (Exception ignored) {
+                    }
+                    boolean below;
+                    if ("completed".equals(mst) && !"completed".equals(rep.planStatus)) {
+                        below = true;
+                    } else if ("completed".equals(rep.planStatus) || mw < 0) {
+                        below = false;
+                    } else {
+                        below = rep.planEps >= 0 && rep.planEps < mw;
+                    }
+                    if (below) {
+                        rep.planStatus = mst;
+                        rep.planEps = mw;
+                        rep.planText = "\u2192 kept, " + mw
+                                + (malTotal > 0 ? "/" + malTotal : "")
+                                + " (MAL is ahead)";
+                    }
+                }
+            }
         }
     }
 
