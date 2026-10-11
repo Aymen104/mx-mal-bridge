@@ -16,6 +16,7 @@ import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.StrictMode;
 import android.util.Log;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
@@ -92,6 +93,12 @@ public class MxService extends AccessibilityService {
     @Override
     public void onCreate() {
         super.onCreate();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder()
+                    .detectNetwork()
+                    .penaltyLog()
+                    .build());
+        }
         Store.init(this);
         notifMgr = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (notifMgr != null && Build.VERSION.SDK_INT >= 26) {
@@ -559,11 +566,9 @@ public class MxService extends AccessibilityService {
                 // Snapshot the user's current MAL list once, so a file-based
                 // estimate can never walk a manual completion or a higher
                 // episode count backwards.
-                Map<Integer, String> cur = null;
-                try {
-                    cur = MalClient.myListStatus(this);
-                } catch (Throwable t) {
-                    Report.err("sync.apply", "MAL list guard unavailable this tick", t);
+                Map<Integer, String> cur = MalClient.myListStatus(this);
+                if (cur.isEmpty()) {
+                    Report.err("sync.apply", "MAL list guard returned empty; proceeding without guard");
                 }
                 for (Store.Row r : Store.all()) {
                     if (!actionable(r) || !pushable(r)) continue;
@@ -591,12 +596,25 @@ public class MxService extends AccessibilityService {
                                 + r.title + " " + mal + " -> " + sig);
                     }
                     try {
-                        MalClient.updateStatus(this, r.matchId, r.planStatus, r.planEps);
+                        // If anime not on user's list, add it first; else update.
+                        Log.i("MxService", "Applying: " + r.title + " mal=" + mal + " sig=" + sig);
+                        try {
+                            if (mal == null) {
+                                MalClient.addToList(this, r.matchId, r.planStatus, r.planEps);
+                                Report.info("sync.apply", "added to list: " + r.title + " -> " + sig);
+                            } else {
+                                MalClient.updateStatus(this, r.matchId, r.planStatus, r.planEps);
+                                Report.info("sync.apply", r.title + " -> " + sig);
+                            }
+                        } catch (Throwable netErr) {
+                            Report.err("sync.apply", "Network error for '" + r.title + "': " + netErr.getMessage(), netErr);
+                            // Don't mark as applied, will retry next tick
+                            continue;
+                        }
                         for (Store.Row o : Store.all()) {
                             if (o.matchId == r.matchId) o.applied = sig;
                         }
                         applied++;
-                        Report.info("sync.apply", r.title + " -> " + sig);
                         Store.save();
                         Thread.sleep(700);
                     } catch (InterruptedException ie) {

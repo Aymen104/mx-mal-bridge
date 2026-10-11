@@ -47,7 +47,9 @@ public class PlannerTest {
     }
 
     @Test
-    public void watchingIsHighestPlayedMinusOne() {
+    public void lastPlayedEpisodeIsNotYetFinished() {
+        // MX labels ep 05 "last played": the user reached it but has not finished
+        // it, so the episode before (4) is the last one actually watched.
         Store.Row r = row("t-watch", "Show Two EP 05", "watching", 12);
         Planner.rebuild();
         assertEquals("watching", r.planStatus);
@@ -126,9 +128,9 @@ public class PlannerTest {
             }
         }
         assertEquals(1, planned);
-        assertEquals(e3, carrier);              // highest played episode carries the plan
+        assertEquals(e3, carrier);              // highest reached episode carries the plan
         assertEquals("watching", carrier.planStatus);
-        assertEquals(2, carrier.planEps);       // highest played (3) - 1
+        assertEquals(2, carrier.planEps);       // reached episode 3, not finished -> 2 watched
         assertEquals("", e4.planStatus);        // NEW must not clobber with plan_to_watch
     }
 
@@ -150,9 +152,9 @@ public class PlannerTest {
     }
 
     @Test
-    public void downloadedButUnwatchedStaysWatchingZero() {
-        // Files present on disk are NOT watched. Presence puts the series in
-        // "watching" but the count must stay 0 until MX reports real progress.
+    public void downloadedEpisodesAreWatchedProgress() {
+        // Files on disk mean the user reached episode 5 but has not finished it,
+        // so the episode before (4) is the last one actually watched.
         Store.Row e1 = row("lib-1", "Lib Show EP 01", "present", 12);
         Store.Row e5 = row("lib-5", "Lib Show EP 05", "present", 12);
         int id = 9100;
@@ -169,24 +171,24 @@ public class PlannerTest {
         }
         assertEquals(1, planned);
         assertEquals("watching", carrier.planStatus);
-        assertEquals(0, carrier.planEps); // nothing watched yet
+        assertEquals(4, carrier.planEps); // reached episode 5, not finished
     }
 
     @Test
-    public void downloadedAllButUnwatchedNeverCompletes() {
-        // Every file is present (ep 9 > total 6) but nothing was watched in MX,
-        // so this must NOT be pushed as completed.
+    public void downloadedLastEpisodeDoesNotCompleteWithoutFinishedTag() {
+        // The final episode is on disk but carries no "finished" tag, so the
+        // series is NOT completed: the episode before it is the last watched.
         Store.Row e9 = row("lib-cap", "Capped Show EP 09", "present", 6);
         e9.matchId = 9101;
         Planner.rebuild();
         assertEquals("watching", e9.planStatus);
-        assertEquals(0, e9.planEps);
+        assertEquals(8, e9.planEps); // reached 9, not finished
     }
 
     @Test
     public void downloadedPlusMxFinishedCompletes() {
         // A present row and an MX-finished last episode belong to the same
-        // series: MX evidence completes it.
+        // series: only the finished tag completes it.
         Store.Row lib = row("lib-fin", "Done Show EP 12", "present", 12);
         Store.Row fin = row("mx-fin", "Done Show EP 12", "finished", 12);
         lib.matchId = 9200;
@@ -197,26 +199,65 @@ public class PlannerTest {
     }
 
     @Test
-    public void downloadedPlusMxWatchingMidStaysWatching() {
-        // All 12 files present, but MX shows only ep 5 currently playing ->
-        // watching 4, never completed.
+    public void downloadedLastEpisodeWithoutFinishedStaysWatching() {
+        // All 12 files present, highest is the last one, but none carries the
+        // "finished" tag -> the series is NOT completed (11 watched), and the
+        // highest-reached row carries the plan.
         Store.Row lib = row("lib-mid", "Mid Show EP 12", "present", 12);
         Store.Row play = row("mx-mid", "Mid Show EP 05", "watching", 12);
         lib.matchId = 9201;
         play.matchId = 9201;
         Planner.rebuild();
-        assertEquals("watching", play.planStatus);
-        assertEquals(4, play.planEps);
+        assertEquals("watching", lib.planStatus);
+        assertEquals(11, lib.planEps);
+        assertEquals("", play.planStatus); // ep 5 is not the carrier
     }
 
     @Test
-    public void presentAiringStaysWatchingZeroWhenUnwatched() {
-        // num_episodes == 0 (still airing) and nothing watched -> watching 0.
+    public void presentAiringCountsReachedEpisode() {
+        // num_episodes == 0 (still airing) and ep 3 is on disk, not finished ->
+        // watching 2.
         Store.Row e3 = row("lib-air", "Airing Show EP 03", "present", 0);
         e3.matchId = 9102;
         Planner.rebuild();
         assertEquals("watching", e3.planStatus);
-        assertEquals(0, e3.planEps);
+        assertEquals(2, e3.planEps);
+    }
+
+    @Test
+    public void firstEpisodeWatchingOrPresentIsZeroWatched() {
+        // A single episode 01 file that is merely reached (watching/present) means
+        // NOTHING has been watched yet: N-1 = 0. Must stay "watching, 0".
+        Store.Row w = row("zero-w", "Zero Show EP 01", "watching", 12);
+        Planner.rebuild();
+        assertEquals("watching", w.planStatus);
+        assertEquals(0, w.planEps);
+    }
+
+    @Test
+    public void lowerFinishedNeverInflatesHigherUnplayedEpisode() {
+        // EP 05 was finished (5 watched) but EP 07 is only present (reached):
+        // the series is at 6, not at 7 and not at 5+1=6 via unique counting.
+        Store.Row f5 = row("mix-5", "Mix Show EP 05", "finished", 12);
+        Store.Row p7 = row("mix-7", "Mix Show EP 07", "present", 12);
+        int id = 9300;
+        f5.matchId = id;
+        p7.matchId = id;
+        Planner.rebuild();
+        assertEquals("watching", p7.planStatus);
+        assertEquals(6, p7.planEps);
+        assertEquals("", f5.planStatus);
+    }
+
+    @Test
+    public void unknownTotalNeverAutoCompletes() {
+        // num_episodes == 0 (still airing / unknown): even a finished high
+        // episode stays "watching" - we cannot know it was the final one.
+        Store.Row e9 = row("air-fin", "Airing Fin EP 09", "finished", 0);
+        e9.matchId = 9301;
+        Planner.rebuild();
+        assertEquals("watching", e9.planStatus);
+        assertEquals(9, e9.planEps);
     }
 
     @Test

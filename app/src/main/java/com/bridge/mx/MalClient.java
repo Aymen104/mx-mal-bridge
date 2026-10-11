@@ -266,24 +266,30 @@ public class MalClient {
      * The user's whole list as animeId -> "status|num_watched". Used before an
      * apply so a file-based estimate can never walk a manual completion (or a
      * higher episode count) backwards.
+     * <p>If a page request fails, we log and continue with what we have.
      */
-    public static Map<Integer, String> myListStatus(Context c) throws Exception {
+    public static Map<Integer, String> myListStatus(Context c) {
         Map<Integer, String> out = new HashMap<>();
         for (int offset = 0; offset < 6000; offset += 300) {
-            JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
-                    + offset + "&fields=list_status");
-            JSONArray data = j.optJSONArray("data");
-            if (data == null) break;
-            for (int i = 0; i < data.length(); i++) {
-                JSONObject o = data.getJSONObject(i);
-                JSONObject node = o.optJSONObject("node");
-                JSONObject ls = o.optJSONObject("list_status");
-                if (node == null || ls == null) continue;
-                out.put(node.optInt("id", -1),
-                        ls.optString("status", "") + "|"
-                                + ls.optInt("num_episodes_watched", 0));
+            try {
+                JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
+                        + offset + "&fields=list_status");
+                JSONArray data = j.optJSONArray("data");
+                if (data == null) break;
+                for (int i = 0; i < data.length(); i++) {
+                    JSONObject o = data.getJSONObject(i);
+                    JSONObject node = o.optJSONObject("node");
+                    JSONObject ls = o.optJSONObject("list_status");
+                    if (node == null || ls == null) continue;
+                    out.put(node.optInt("id", -1),
+                            ls.optString("status", "") + "|"
+                                    + ls.optInt("num_episodes_watched", 0));
+                }
+                if (data.length() < 300) break;
+            } catch (Exception e) {
+                Log.w(TAG, "myListStatus page offset=" + offset + " failed", e);
+                break; // stop pagination on error, return what we have
             }
-            if (data.length() < 300) break;
         }
         return out;
     }
@@ -295,6 +301,7 @@ public class MalClient {
     /** Update list status; mirrors DailyAL (form body, PUT, PATCH fallback). */
     public static void updateStatus(Context c, int animeId, String status, int eps)
             throws Exception {
+        Log.i(TAG, "updateStatus: animeId=" + animeId + " status=" + status + " eps=" + eps);
         String t = token(c);
         if (t == null) throw new Exception("not logged in");
         Map<String, String> form = new HashMap<>();
@@ -306,10 +313,27 @@ public class MalClient {
             code = request("PATCH", API + "anime/" + animeId + "/my_list_status", t, body);
         }
         if (code < 200 || code >= 300) throw new Exception("update HTTP " + code);
+        Log.i(TAG, "updateStatus success: " + code);
+    }
+
+    /** Add anime to user's list (PUT - same endpoint as update, MAL handles both). */
+    public static void addToList(Context c, int animeId, String status, int eps)
+            throws Exception {
+        Log.i(TAG, "addToList: animeId=" + animeId + " status=" + status + " eps=" + eps);
+        String t = token(c);
+        if (t == null) throw new Exception("not logged in");
+        Map<String, String> form = new HashMap<>();
+        form.put("status", status);
+        if (eps >= 0) form.put("num_watched_episodes", String.valueOf(eps));
+        String body = encodeForm(form);
+        int code = request("PUT", API + "anime/" + animeId + "/my_list_status", t, body);
+        if (code < 200 || code >= 300) throw new Exception("add HTTP " + code);
+        Log.i(TAG, "addToList success: " + code);
     }
 
     private static int request(String method, String url, String token, String body)
             throws Exception {
+        Log.i(TAG, "MAL API request: " + method + " " + url + " on thread=" + Thread.currentThread().getName() + " isMain=" + (Looper.getMainLooper() == Looper.myLooper()));
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
         conn.setConnectTimeout(15000);
@@ -326,7 +350,8 @@ public class MalClient {
             out.close();
         }
         int code = conn.getResponseCode();
-        readAll(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+        String resp = readAll(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+        Log.i(TAG, "MAL API response: " + code + " " + resp);
         conn.disconnect();
         return code;
     }

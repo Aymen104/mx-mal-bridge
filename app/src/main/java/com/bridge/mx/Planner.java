@@ -8,25 +8,30 @@ import java.util.Map;
 /**
  * Turns the rows observed in MX Player into planned MyAnimeList writes.
  *
- * <p>How far a series has been <em>watched</em> is taken ONLY from MX Player's
- * own state, never from the fact that files happen to sit on the device:
+ * <p>Per-episode tracking: every file is ONE episode and its evidence decides
+ * how much of it counts as watched:
  *
  * <pre>
- *   finished -> that episode was watched to the end  -> counts as ep
- *   watching -> the user is currently ON that episode -> counts as (ep - 1)
- *   new      -> never opened                          -> counts as nothing
- *   present  -> a file exists on the device (MediaStore scan) -> NOT watched
+ *   finished (gray tag) -> episode watched to end (95%+ playback)  -> N watched
+ *   watching (last played) -> episode reached, in progress         -> N-1 watched
+ *   present (downloaded) -> file exists, user has it               -> N-1 watched
+ *   new (NEW badge)       -> never opened                          -> 0 watched
  * </pre>
  *
- * <p>"present" (downloaded) rows exist so a series the user has on disk is at
- * least put on the list, but a downloaded file is not an episode watched. So a
- * fully downloaded, never-opened series becomes "watching, 0" - and it is only
- * marked "completed" once MX Player shows it watched through the final episode.
- * This is the fix for a fully-downloaded series being pushed as completed while
- * it was still unfinished in MX Player.
+ * <p>The series progress is the MAXIMUM over its unique episodes: reaching
+ * episode N (present/watching) means the user watched through N-1, so ep N
+ * contributes N-1; a finished episode N contributes N. No "highest episode =
+ * all previous watched" assumption; a lower finished episode never inflates a
+ * higher downloaded-but-unplayed one.
  *
- * <p>Rows are grouped by matched MAL id, so a multi-episode series produces ONE
- * write. The highest-watched row carries the plan.
+ * <p>A series is "completed" ONLY when the FINAL episode (MAL total when
+ * known) carries the "finished" tag. A downloaded final episode without the
+ * finished tag keeps the series "watching" at N-1, and when the total is
+ * unknown the series is never auto-completed.
+ *
+ * <p>Rows are grouped by matched MAL id, so a multi-episode series produces
+ * ONE write, carried by the row that achieved the highest progress (ties go to
+ * the row with the strongest evidence state).
  *
  * <p>Plan is pure computation; nothing is sent from here, so rebuild() is a dry run.
  */
@@ -63,101 +68,114 @@ public class Planner {
         }
 
         for (List<Store.Row> g : groups.values()) {
-            boolean anyNew = false;
-            boolean anyPresent = false;
-            boolean anyWatch = false;
-            boolean sawFinished = false;
-            boolean sawWatching = false;
-            int watched = -1;
-            Store.Row repWatch = null;
-            Store.Row repPresent = null;
+            int malTotal = 0;            // MAL total episodes (0 = unknown/airing)
+            int groupMaxEp = 0;          // highest episode number seen in MX
+            int series = 0;              // max per-episode contribution
+            boolean reachedAny = false;  // any finished/watching/present evidence
+            boolean onlyNew = false;     // evidence exists but is only "new"
+            boolean finalFinished = false; // the final episode carries "finished"
+            Store.Row rep = null;
+            int repContrib = -1;
 
             for (Store.Row r : g) {
-                if ("new".equals(r.state)) anyNew = true;
-                if ("present".equals(r.state)) {
-                    anyPresent = true;
-                    if (repPresent == null || r.ep > repPresent.ep) repPresent = r;
+                if (r.numEp > malTotal) malTotal = r.numEp;
+                if (r.ep <= 0) {
+                    // Unnumbered file: only meaning for an explicitly finished
+                    // single-episode entry (movie), handled after the loop.
+                    continue;
                 }
-                if ("finished".equals(r.state)) sawFinished = true;
-                if ("watching".equals(r.state)) sawWatching = true;
+                if (r.ep > groupMaxEp) groupMaxEp = r.ep;
 
-                int w = watchedFrom(r);
-                if (w >= 0) {
-                    anyWatch = true;
-                    if (w > watched) {
-                        watched = w;
-                        repWatch = r;
-                    }
-                } else if (isWatchedState(r.state)) {
-                    anyWatch = true; // played/watched but no episode number in the name
+                String state = r.state;
+                int contrib = episodeValue(state, r.ep);
+                if (contrib > series) series = contrib;
+                if ("finished".equals(state) || "watching".equals(state)
+                        || "present".equals(state)) {
+                    reachedAny = true;
+                } else if ("new".equals(state)) {
+                    onlyNew = true;
+                }
+                // Carrier row = the one that achieved the highest progress;
+                // ties go to the strongest evidence state.
+                if (contrib > repContrib
+                        || (contrib == repContrib && statePriority(state)
+                            > (rep == null ? -1 : statePriority(rep.state)))) {
+                    rep = r;
+                    repContrib = contrib;
                 }
             }
 
-            if (!anyWatch && !anyPresent && !anyNew) continue; // no reliable signal
+            if (rep == null) {
+                // No numbered episode at all: an unnumbered "finished" file on a
+                // single-episode MAL entry is a fully watched movie.
+                if (malTotal == 1) {
+                    Store.Row movie = null;
+                    for (Store.Row r : g) {
+                        if (r.ep <= 0 && "finished".equals(r.state)) {
+                            movie = r;
+                            break;
+                        }
+                    }
+                    if (movie != null) {
+                        movie.planStatus = "completed";
+                        movie.planEps = 1;
+                        movie.planText = "\u2192 completed, 1/1 (movie finished in MX)";
+                    }
+                }
+                continue;
+            }
 
-            Store.Row rep = repWatch != null ? repWatch
-                    : (repPresent != null ? repPresent : g.get(0));
-            int numEp = rep.numEp;
+            // Final episode = MAL total when known, else the highest MX episode.
+            int finalEp = malTotal > 0 ? malTotal : groupMaxEp;
+            if (finalEp > 0) {
+                for (Store.Row r : g) {
+                    if (r.ep == finalEp && "finished".equals(r.state)) {
+                        finalFinished = true;
+                        break;
+                    }
+                }
+            }
 
-            if (watched >= 0 && numEp > 0 && watched >= numEp) {
-                // Completed ONLY on real watch evidence reaching the last episode.
+            if (malTotal > 0 && finalFinished) {
                 rep.planStatus = "completed";
-                rep.planEps = numEp;
-                rep.planText = "\u2192 completed, " + numEp + "/" + numEp
+                rep.planEps = malTotal;
+                rep.planText = "\u2192 completed, " + malTotal + "/" + malTotal
                         + " (watched in MX)";
-            } else if (watched >= 0) {
+            } else if (reachedAny) {
                 rep.planStatus = "watching";
-                rep.planEps = Math.max(0, watched);
-                rep.planText = "\u2192 watching, " + rep.planEps
-                        + (numEp > 0 ? "/" + numEp : "")
-                        + " (watched in MX)";
-            } else if (numEp == 1 && sawFinished) {
-                // A finished single-episode work (movie/special) is done even
-                // when its filename carries no episode number.
-                rep.planStatus = "completed";
-                rep.planEps = 1;
-                rep.planText = "\u2192 completed, 1/1 (watched in MX)";
-            } else if (numEp == 1 && sawWatching) {
-                // Started but not finished.
-                rep.planStatus = "watching";
-                rep.planEps = 0;
-                rep.planText = "\u2192 watching, 0/1 (watched in MX)";
-            } else if (anyWatch) {
-                // Played/watched with no episode number: cannot say how far the
-                // series got, so never push (this created a bogus 0-episode MAL
-                // entry in an earlier build).
-                rep.planText = "watched, no episode # \u2014 not pushed";
-            } else if (anyPresent) {
-                // Files on disk but nothing watched: on the list, zero watched.
-                rep.planStatus = "watching";
-                rep.planEps = 0;
-                rep.planText = "\u2192 watching, 0" + (numEp > 0 ? "/" + numEp : "")
-                        + " (downloaded, not watched)";
-            } else {
-                // MAL API enum is plan_to_watch (shown as "Planning" in the UI)
+                rep.planEps = series;
+                rep.planText = "\u2192 watching, " + series
+                        + (malTotal > 0 ? "/" + malTotal : "")
+                        + (repContrib == 0 ? " (reached ep " + rep.ep + ")" : " (watched in MX)");
+            } else if (onlyNew) {
                 rep.planStatus = "plan_to_watch";
                 rep.planEps = 0;
                 rep.planText = "\u2192 planned (0 eps)";
             }
+            // else: only unknown/none rows -> planStatus stays "" (skip)
         }
     }
 
     /**
-     * Episodes provably watched, from MX Player's per-row state alone.
-     * "finished" was watched to the end; "watching" is the episode the user is
-     * currently on, so only the ones before it are done. Returns -1 when the
-     * row carries no usable watch signal / episode number.
+     * Per-episode watched contribution:
+     * finished -> the episode itself; watching/present -> the episode BEFORE it
+     * (reached but not finished); new/unknown/none -> nothing.
      */
-    private static int watchedFrom(Store.Row r) {
-        if (r.ep <= 0) return -1;
-        if ("finished".equals(r.state)) return r.ep;
-        if ("watching".equals(r.state)) return r.ep - 1;
-        return -1;
+    private static int episodeValue(String state, int ep) {
+        if ("finished".equals(state)) return ep;
+        if ("watching".equals(state) || "present".equals(state)) return ep - 1;
+        return 0;
     }
 
-    /** MX states that mean "this file was opened/played" (watch evidence). */
-    private static boolean isWatchedState(String state) {
-        return "finished".equals(state) || "watching".equals(state);
+    /**
+     * Priority for picking representative row: finished > watching > present > new > unknown/none
+     */
+    private static int statePriority(String state) {
+        if ("finished".equals(state)) return 4;
+        if ("watching".equals(state)) return 3;
+        if ("present".equals(state)) return 2;
+        if ("new".equals(state)) return 1;
+        return 0;
     }
 
     /**
