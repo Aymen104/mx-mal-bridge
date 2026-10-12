@@ -25,3 +25,8 @@ Thumbs.db
 # Local build/test logs
 build.log
 test.log
+
+# JVM crash dumps (Gradle daemon crashes on low-RAM machines)
+hs_err_pid*.log
+replay_pid*.log
+*.hprof

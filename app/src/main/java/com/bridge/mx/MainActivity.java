@@ -91,6 +91,11 @@ public class MainActivity extends Activity implements Store.Listener {
         say("Errors: " + safeReportPath());
         Retention.init(this);
         refreshStatus();
+        // QA hook: `adb shell am start -n com.bridge.mx/.MainActivity --ez self_test true`
+        // runs the deterministic self-test (and its repair escalation) on launch.
+        if (getIntent() != null && getIntent().getBooleanExtra("self_test", false)) {
+            getWindow().getDecorView().postDelayed(this::doTest, 800);
+        }
     }
 
     // ------------------------------------------------------- UI from code
@@ -127,6 +132,8 @@ public class MainActivity extends Activity implements Store.Listener {
         strip.addView(btnAuto);
         strip.addView(btn("AI", v -> doAi()));
         strip.addView(btn("Exam", v -> doExam()));
+        strip.addView(btn("Test", v -> doTest()));
+        strip.addView(btn("Titles", v -> doTitles()));
         strip.addView(btn("Wipe", v -> doWipe()));
         hs.addView(strip, lp(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -228,6 +235,11 @@ public class MainActivity extends Activity implements Store.Listener {
             final Educate.Result study = Educate.study(MainActivity.this);
             final Exam.Report rep = Exam.run(brain);
             final Reward.Result res = Reward.award(MainActivity.this, rep);
+            // Too many mistakes: raise a repair incident for the desktop watcher.
+            final boolean escalated = !res.passed && !Repair.reportedRecently(MainActivity.this);
+            if (escalated) {
+                Repair.reportExam(MainActivity.this, "exam failed (grade " + res.grade + ")", rep);
+            }
             ui.post(() -> {
                 StringBuilder sb = new StringBuilder();
                 sb.append(study.line()).append("\n\n");
@@ -250,6 +262,10 @@ public class MainActivity extends Activity implements Store.Listener {
                     sb.append("\n");
                 }
                 sb.append(Reward.detail());
+                if (escalated) {
+                    sb.append("\n\nToo many mistakes: repair incident written to\n")
+                            .append(Repair.dir(MainActivity.this)).append("/LATEST.md");
+                }
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("Exam \u2014 " + Reward.gradeInWords(res.grade))
                         .setMessage(sb.toString())
@@ -265,6 +281,61 @@ public class MainActivity extends Activity implements Store.Listener {
                 if (s != null) s.refreshNotification();
             });
         }, "mx-exam").start();
+    }
+
+    /**
+     * Refresh the anime-title knowledge base from animeTosho (the ~2-3 month
+     * cadence, or on demand), then study the new titles immediately so the
+     * matcher learns any shorthands they unlock.
+     */
+    private void doTitles() {
+        say("Refreshing anime titles from animeTosho...");
+        new Thread(() -> {
+            // refresh() studies and self-tests any new bulk of titles.
+            final Catalogue.Result r = Catalogue.refresh(MainActivity.this, true);
+            ui.post(() -> {
+                StringBuilder sb = new StringBuilder(r.line);
+                sb.append("\n").append(Catalogue.ageLine(MainActivity.this));
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Anime titles")
+                        .setMessage(sb.toString())
+                        .setPositiveButton("OK", null)
+                        .show();
+                refreshStatus();
+            });
+        }, "mx-titles").start();
+    }
+
+    /**
+     * Run the app's own test (the graded exam, deterministically, no reward).
+     * If it fails — too many mistakes — a repair incident is raised for the
+     * desktop OpenCode watcher.
+     */
+    private void doTest() {
+        say("Studying, then self-test...");
+        new Thread(() -> {
+            final Educate.Result study = Educate.study(MainActivity.this);
+            final Selftest.Result t = Selftest.run();
+            Selftest.record(MainActivity.this, t);
+            final boolean escalated = !t.pass() && !Repair.reportedRecently(MainActivity.this);
+            if (escalated) {
+                Repair.report(MainActivity.this, "manual self-test failed", t, study.line());
+            }
+            ui.post(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append(study.line()).append("\n").append(t.line());
+                if (escalated) {
+                    sb.append("\n\nRepair incident written:\n")
+                            .append(Repair.dir(MainActivity.this)).append("/LATEST.md");
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Self-test")
+                        .setMessage(sb.toString())
+                        .setPositiveButton("OK", null)
+                        .show();
+                refreshStatus();
+            });
+        }, "mx-test").start();
     }
 
     private void doWipe() {
@@ -621,6 +692,8 @@ public class MainActivity extends Activity implements Store.Listener {
                 + " | auto " + (Store.autoApply() ? "ON" : "off")
                 + " | ai " + LlmBrain.get(this).status()
                 + " | " + Retention.statusLine()
+                + " | " + Catalogue.ageLine(this)
+                + " | " + Selftest.statusLine(this)
                 + sync);
         btnAuto.setText(Store.autoApply() ? "Auto: ON" : "Auto: off");
     }

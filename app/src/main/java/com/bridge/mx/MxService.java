@@ -712,6 +712,16 @@ public class MxService extends AccessibilityService {
     private void runPipeline() {
         try {
             Retention.purgeIfDue(this);
+            if (Catalogue.isStale(this)) {
+                // Quarterly-ish refresh of the anime-title knowledge base. Runs on
+                // its own thread so the ~250-page animeTosho walk never stalls the
+                // match/apply pass; Catalogue guards against overlapping runs.
+                new Thread(() -> {
+                    // refresh() studies and self-tests any new bulk of titles.
+                    Catalogue.Result cr = Catalogue.refresh(this, false);
+                    if (cr.ok) Report.info("service", "catalogue refresh: " + cr.line);
+                }, "catalogue-refresh").start();
+            }
             collect("tick");
             int lib = 0;
             if (LibraryScanner.canRead(this)) {

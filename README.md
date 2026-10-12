@@ -35,7 +35,7 @@ The app **has a full interface** — and every view of it is built from code
 (no layout XML anywhere):
 
 - status line (rows / service / MAL login / planned / auto / ai / next-sync timer)
-- button strip: **Login · Scan · Lib · Colors · Match · Plan · Apply · Auto · AI**
+- button strip: **Login · Scan · Lib · Colors · Match · Plan · Apply · AI · Exam · Test · Titles · Wipe**
 - observed-episode list with state, episode, MAL match and planned action
 - scrolling log; every error is also persisted (see below)
 
@@ -134,6 +134,63 @@ invent an id. Successful picks are remembered as aliases.
 - **Without the model everything still works** — the app silently falls back to
   the deterministic matcher, and the status line shows `ai no model`.
 
+## Title catalogue (animeTosho) and the exam
+
+Matching needs to know the *real* universe of anime titles, and it needs to
+keep up with new seasons. The catalogue is refreshed from
+**[animeTosho](https://animetosho.org)** — deliberately **not** from MAL, so
+refreshing needs no login and never touches the user's list.
+
+- **Bundled bulk:** `app/src/main/assets/anime_titles.txt` — the scraped series
+  set (≈9,952 titles) ships inside the APK. First run always works offline.
+- **Refresh:** `Catalogue.refresh()` walks `animetosho.org/animes?page=N`
+  (falling back to `.net`), gzip-aware, ~40 rows/page, then **merges
+  only-add** onto the current list — a refresh can never delete a title.
+  Written atomically to `filesDir/catalogue.txt`.
+- **Cadence:** considered stale after **75 days** (the "2–3 months" window),
+  with a 1-day retry back-off on failure. The background service refreshes
+  itself on its own thread when stale; the **Titles** button forces it.
+- **Study, then is tested:** every time the catalogue grows, the app
+  **studies** it (deriving shorthand aliases only where a shorthand maps to
+  exactly one catalogue title) and then takes its own **exam** — the same
+  deterministic pipeline the reward system uses. The exam is pure JVM, so it
+  is unit-tested too (`CatalogueTest`, `BundledCatalogueTest`).
+
+## Self-repair when the matcher makes too many mistakes
+
+The bridge must **never** pretend it can work unattended when it *fails its own
+exam* (grade below a C, accuracy < 0.70). When that happens — after a title
+refresh, or from the **Test** button — it escalates instead (`Repair.java`):
+
+1. writes a self-contained **incident report** (Markdown: exact mistakes,
+   app/device context, catalogue state) to
+   `Android/data/com.bridge.mx/files/repair/incident-*.md` (+`LATEST.md`), so a
+   host can pull it over adb;
+2. **turns on wireless debugging** — directly when it holds
+   `WRITE_SECURE_SETTINGS` (a one-time
+   `adb shell pm grant com.bridge.mx android.permission.WRITE_SECURE_SETTINGS`),
+   otherwise deep-links to Developer Options;
+3. posts a notification; and
+4. POSTs the report to a host watcher if `repair/bridge.txt` names one.
+
+The desktop companion, **`tools/opencode_repair.ps1`**, closes the loop:
+it enables adb-over-Wi-Fi (`adb tcpip 5555` + `adb connect`), pulls the
+incidents, and opens a **fresh OpenCode session** primed with the report —
+`opencode run --auto --agent <agent> --prompt <incident>` — to diagnose the
+root cause, fix it, rebuild and reinstall.
+
+```powershell
+# one-shot, over Wi-Fi, then open an OpenCode session to fix
+powershell -ExecutionPolicy Bypass -File tools\opencode_repair.ps1 -Wireless
+# or keep watching; or receive the app's direct POSTs
+powershell -ExecutionPolicy Bypass -File tools\opencode_repair.ps1 -Wireless -Watch
+powershell -ExecutionPolicy Bypass -File tools\opencode_repair.ps1 -Serve -Port 8765
+```
+
+QA hook (deterministic, no UI taps): `adb shell am start -n
+com.bridge.mx/.MainActivity --ez self_test true` runs the exam + escalation on
+launch.
+
 ## Build
 
 Plain Gradle project — Java only (AGP 8.7.0, JDK 17, SDK 34). The only runtime
@@ -174,6 +231,14 @@ Enable once: **Settings ▸ Accessibility ▸ MX-MAL Bridge ▸ On**.
 - `MalClient.java` — PKCE login, token refresh, search, status update
 - `Store.java` — row persistence (SharedPreferences), change listeners
 - `Report.java` / `BridgeApp.java` — error reports + uncaught-exception capture
+- `Catalogue.java` — animeTosho title refresh (75-day staleness, only-add merge)
+- `Educate.java` — studies the catalogue into unambiguous shorthand aliases
+- `Exam.java` / `Selftest.java` / `Reward.java` — the deterministic exam, its
+  self-test wrapper and the grade/reward ledger
+- `Repair.java` — too-many-mistakes escalation (incident report + wireless
+  debugging + notification + host bridge)
+- `tools/opencode_repair.ps1` — host watcher: pull incidents, enable adb over
+  Wi-Fi, open an OpenCode repair session
 
 ## License
 

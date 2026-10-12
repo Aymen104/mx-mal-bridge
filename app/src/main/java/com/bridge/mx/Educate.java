@@ -2,11 +2,6 @@ package com.bridge.mx;
 
 import android.content.Context;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -95,20 +90,16 @@ public final class Educate {
         return key.length() >= 4 ? key : null;
     }
 
-    /** Android entry point: read the bundled corpus, study it, persist aliases. */
+    /**
+     * Android entry point: load the catalogue (a refreshed animeTosho snapshot
+     * when present, else the bundled asset), study it, persist aliases.
+     *
+     * @see Catalogue for the ~2-3 month refresh cadence
+     */
     public static Result study(Context ctx) {
-        List<String> titles = new ArrayList<>();
-        try (InputStream in = ctx.getAssets().open(ASSET);
-             BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                line = line.trim();
-                // Note: do NOT treat '#' as a comment — several real catalogue
-                // titles start with it ("#Compass", "#Zombie Sagashitemasu").
-                if (!line.isEmpty()) titles.add(line);
-            }
-        } catch (Throwable t) {
-            Report.warn("educate", "corpus asset unavailable: " + t);
+        List<String> titles = Catalogue.titles(ctx);
+        if (titles.isEmpty()) {
+            Report.warn("educate", "corpus unavailable");
             return new Result(0, 0, "none");
         }
         Result res = studyTitles(titles);
