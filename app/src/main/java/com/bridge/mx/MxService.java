@@ -64,11 +64,8 @@ public class MxService extends AccessibilityService {
     private static final String CH = "mxbridge_status";
     private static final int NOTIFY_ID = 1001;
 
-    // Calibrated centroids (light theme, bg ~241,241,241).
-    private static final int C_PLAYED[] = {103, 125, 179};
-    private static final int C_FINISHED[] = {167, 149, 132};
-    private static final int C_NORMAL[] = {123, 105, 101};
-    private static final int CENTROID_MAX_DIST = 45;
+    // Colour classification lives in ColorClassify (pure, unit-tested): the
+    // calibrated centroids AND the neutral-grey guard are defined there.
 
     private static MxService instance;
 
@@ -100,6 +97,7 @@ public class MxService extends AccessibilityService {
                     .build());
         }
         Store.init(this);
+        Retention.init(this);
         notifMgr = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (notifMgr != null && Build.VERSION.SDK_INT >= 26) {
             NotificationChannel c = new NotificationChannel(CH,
@@ -115,6 +113,10 @@ public class MxService extends AccessibilityService {
         instance = this;
         Store.init(this);
         Watched.init(this);
+        Retention.init(this);
+        if (Retention.purgeIfDue(this)) {
+            Report.info("service", "weekly retention purge ran on connect");
+        }
         AliasStore.load(this);
         configureServiceInfo(); // interaction with other apps = code only
         Report.info("service", "accessibility service connected");
@@ -293,10 +295,14 @@ public class MxService extends AccessibilityService {
         if (count != null && !count.isEmpty()) return null;
 
         Store.Row r = new Store.Row();
-        r.key = title + "|" + (dur == null ? "" : dur);
+        EpisodeParser.Parsed parsed = EpisodeParser.parse(title);
+        r.key = Store.canon(title);
         r.title = title;
         r.duration = dur == null ? "" : dur;
         r.status = status == null ? "" : status;
+        r.parsedTitle = parsed.title;
+        r.ep = parsed.ep;
+        r.fromLib = false;
         if (badge != null && !badge.isEmpty()) r.state = "new";
         else if (played != null && !played.isEmpty()) r.state = "watching";
         else r.state = "unknown";
@@ -426,7 +432,7 @@ public class MxService extends AccessibilityService {
             int mr = best[1] / best[0], mg = best[2] / best[0], mb = best[3] / best[0];
             r.rgb = (mr << 16) | (mg << 8) | mb;
 
-            String verdict = nearest(mr, mg, mb);
+            String verdict = ColorClassify.classify(mr, mg, mb);
             if (verdict == null) continue;
             boolean textState = "watching".equals(r.state) || "new".equals(r.state)
                     || "present".equals(r.state);
@@ -448,23 +454,6 @@ public class MxService extends AccessibilityService {
             updateNotification(null);
             Log.i(TAG, "classify: verdicts updated");
         }
-    }
-
-    private static String nearest(int r, int g, int b) {
-        int dp = dist2(r, g, b, C_PLAYED);
-        int df = dist2(r, g, b, C_FINISHED);
-        int dn = dist2(r, g, b, C_NORMAL);
-        int limit = CENTROID_MAX_DIST * CENTROID_MAX_DIST;
-        int min = Math.min(dp, Math.min(df, dn));
-        if (min > limit) return null;
-        if (min == dp) return "watching";
-        if (min == df) return "finished";
-        return "none";
-    }
-
-    private static int dist2(int r, int g, int b, int[] c) {
-        int dr = r - c[0], dg = g - c[1], db = b - c[2];
-        return dr * dr + dg * dg + db * db;
     }
 
     private static List<AccessibilityNodeInfo> flatten(AccessibilityNodeInfo root) {
@@ -722,6 +711,7 @@ public class MxService extends AccessibilityService {
      */
     private void runPipeline() {
         try {
+            Retention.purgeIfDue(this);
             collect("tick");
             int lib = 0;
             if (LibraryScanner.canRead(this)) {
@@ -924,6 +914,7 @@ public class MxService extends AccessibilityService {
                         + (Store.autoApply() ? "ON" : "off");
                 long in = nextRunInMs();
                 if (in > 0) text += " | sync in " + ((in + 59_000) / 60_000) + "m";
+                text += " | " + Retention.statusLine();
             }
             if (text.equals(lastNotify)) return;
             lastNotify = text;

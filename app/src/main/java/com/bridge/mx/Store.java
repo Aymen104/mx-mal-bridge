@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -43,6 +44,7 @@ public class Store {
         public String applied = "";    // "status|eps" last pushed to MAL
         public String matchTried = ""; // parsedTitle we already searched for
         public int watchedPct = -1;    // max % of the episode played in MX (>=95 finished)
+        public boolean fromLib = false; // true while only known from the MediaStore scan
     }
 
     public interface Listener {
@@ -70,9 +72,55 @@ public class Store {
         return new ArrayList<>(rows.values());
     }
 
+    /** Conservative identity normalization. */
+    public static String norm(String s) {
+        if (s == null) return "";
+        return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+    }
+
+    /**
+     * Canonical row identity: parsed series title + episode number when possible,
+     * falling back to the whole filename. This prevents the same file appearing as
+     * two rows (when MX does/doesn't show its duration label).
+     */
+    public static String canon(String filename) {
+        return canon(EpisodeParser.parse(filename), filename);
+    }
+
+    public static String canon(EpisodeParser.Parsed p, String filename) {
+        String nk = p == null ? "" : norm(p.title);
+        if (nk.length() >= 3) return "ep:" + nk + "|" + (p.ep > 0 ? p.ep : 0);
+        String fk = norm(filename);
+        return "f:" + (fk.isEmpty() ? (filename == null ? "" : filename.trim()) : fk);
+    }
+
     /** Drop all observed rows (test/maintenance helper; listeners untouched). */
     public static synchronized void clear() {
         rows.clear();
+    }
+
+    /**
+     * Wipe all bridge history: observed rows and the cached MAL snapshot.
+     *
+     * <p>Used by the weekly retention purge. Aliases ({@link AliasStore}) and the
+     * error log are deliberately left intact: they are learned corrections, not
+     * history, and throwing them away would make the bridge re-mistake titles it
+     * has already been taught. The MAL snapshot is simply re-fetched on the next
+     * sync.
+     *
+     * @return number of rows removed
+     */
+    public static synchronized int wipe() {
+        int n = rows.size();
+        rows.clear();
+        malCur.clear();
+        if (prefs != null) {
+            try {
+                prefs.edit().putString("rows", "[]").putString("malcur", "").apply();
+            } catch (Exception ignored) {
+            }
+        }
+        return n;
     }
 
     /** Remove library rows (key prefix "lib:") not seen in the latest scan. */
@@ -80,7 +128,7 @@ public class Store {
         Iterator<Map.Entry<String, Row>> it = rows.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<String, Row> e = it.next();
-            if (e.getKey().startsWith("lib:") && !keep.contains(e.getKey())) it.remove();
+            if (e.getValue().fromLib && !keep.contains(e.getKey())) it.remove();
         }
     }
 
@@ -90,6 +138,11 @@ public class Store {
         if (old != null) {
             r.applied = old.applied;
             r.matchTried = old.matchTried;
+            // A library-only re-scan must never weaken a live MX verdict.
+            if (r.fromLib && !old.fromLib && stateRank(old.state) > stateRank(r.state)) {
+                r.state = old.state;
+                r.rgb = old.rgb;
+            }
             // A text-only re-observation must not wipe a color-based verdict.
             if ("unknown".equals(r.state)
                     && ("finished".equals(old.state) || "none".equals(old.state))) {
@@ -97,9 +150,8 @@ public class Store {
             }
             if (r.rgb < 0) r.rgb = old.rgb;
             if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
-            // Keep derived data unless the source title changed. Library rows are
-            // keyed on the parsed series, so a newer (higher) episode filename
-            // must not invalidate an existing MAL match.
+            r.fromLib = r.fromLib && old.fromLib;
+            // Keep derived data unless the source title changed.
             boolean sameSeries = r.title.equals(old.title)
                     || (!r.parsedTitle.isEmpty() && r.parsedTitle.equals(old.parsedTitle));
             if (sameSeries) {
@@ -139,6 +191,7 @@ public class Store {
                 o.put("applied", r.applied);
                 o.put("matchTried", r.matchTried);
                 o.put("watchedPct", r.watchedPct);
+                o.put("fromLib", r.fromLib);
                 arr.put(o);
             }
             prefs.edit().putString("rows", arr.toString()).apply();
@@ -185,14 +238,16 @@ public class Store {
                 r.applied = o.optString("applied", "");
                 r.matchTried = o.optString("matchTried", "");
                 r.watchedPct = o.optInt("watchedPct", -1);
+                r.fromLib = o.optBoolean("fromLib", false);
                 rows.put(r.key, r);
             }
+            dedupe();
         } catch (Exception ignored) {
         }
     }
 
     public static void addListener(Listener l) {
-        listeners.add(l);
+        if (l != null && !listeners.contains(l)) listeners.add(l);
     }
 
     public static void removeListener(Listener l) {
@@ -230,5 +285,57 @@ public class Store {
     /** Current MAL value for an anime as "status|eps", or null when unknown. */
     public static synchronized String malCur(int matchId) {
         return malCur.get(matchId);
+    }
+
+    /** finished > watching > present > new > none/unknown. */
+    private static int stateRank(String st) {
+        if ("finished".equals(st)) return 4;
+        if ("watching".equals(st)) return 3;
+        if ("present".equals(st)) return 2;
+        if ("new".equals(st)) return 1;
+        if ("none".equals(st)) return 1;
+        return 0;
+    }
+
+    /**
+     * Re-key every row onto its canonical identity and merge collisions (same
+     * episode seen with/without duration, or lib+mx). Idempotent.
+     */
+    public static synchronized int dedupe() {
+        int before = rows.size();
+        Map<String, Row> out = new LinkedHashMap<>();
+        for (Row r : rows.values()) {
+            String k = canon(r.title);
+            r.key = k;
+            Row keep = out.get(k);
+            if (keep == null) out.put(k, r);
+            else merge(keep, r);
+        }
+        rows.clear();
+        rows.putAll(out);
+        return before - out.size();
+    }
+
+    private static void merge(Row keep, Row add) {
+        if (stateRank(add.state) > stateRank(keep.state)) keep.state = add.state;
+        if ((keep.duration == null || keep.duration.isEmpty())
+                && add.duration != null && !add.duration.isEmpty()) {
+            keep.duration = add.duration;
+        }
+        if (keep.rgb < 0 && add.rgb >= 0) keep.rgb = add.rgb;
+        if (add.watchedPct > keep.watchedPct) keep.watchedPct = add.watchedPct;
+        if ((keep.parsedTitle == null || keep.parsedTitle.isEmpty())
+                && add.parsedTitle != null && !add.parsedTitle.isEmpty()) {
+            keep.parsedTitle = add.parsedTitle;
+        }
+        if (keep.ep < 0 && add.ep >= 0) keep.ep = add.ep;
+        if (keep.matchId < 0 && add.matchId >= 0) {
+            keep.matchId = add.matchId;
+            keep.matchTitle = add.matchTitle;
+            keep.numEp = add.numEp;
+        }
+        if (keep.applied.isEmpty()) keep.applied = add.applied;
+        if (keep.matchTried.isEmpty()) keep.matchTried = add.matchTried;
+        keep.fromLib = keep.fromLib && add.fromLib;
     }
 }

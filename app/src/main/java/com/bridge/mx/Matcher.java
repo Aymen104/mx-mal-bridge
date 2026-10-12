@@ -134,7 +134,10 @@ public class Matcher {
                     + "|(?:\\bmovie\\b)"
                     + "|(?:\\bgekijouban\\b)"
                     + "|(?:\\brecap\\b)"
-                    + "|(?:\\bgaiden\\b)");
+                    + "|(?:\\bgaiden\\b)"
+                    // MyAnimeList marks continuation series with a trailing glyph
+                    // ("Gintama'", "Gintama\u00b0"); it must lose to the base entry.
+                    + "|(?:['\u2019\u00b0\u2032\u2033]+\\s*$)");
 
     /**
      * Rank every candidate by similarity, best first. Signals combined per
@@ -197,13 +200,14 @@ public class Matcher {
         return s;
     }
 
-    /** One comparison channel: edit distance, containment and token overlap. */
+    /**
+     * One comparison channel, delegated to {@link TitleTools}: edit distance,
+     * containment, token overlap, token-sort, bigram Dice, Jaro-Winkler and the
+     * kana/romaji bridge. All extra channels are gated inside TitleTools so a
+     * shared word alone can never lift noise past {@link #ACCEPT}.
+     */
     private static double score(String wantRaw, String wNorm, String candidateRaw) {
-        if (candidateRaw == null || candidateRaw.isEmpty()) return 0;
-        double s = sim(wNorm, norm(candidateRaw));
-        double tok = tokenDice(wantRaw, candidateRaw);
-        if (tok >= 0.60) s = Math.max(s, tok);
-        return s;
+        return TitleTools.score(wantRaw, candidateRaw);
     }
 
     static String norm(String s) {

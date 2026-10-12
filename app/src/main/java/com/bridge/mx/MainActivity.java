@@ -89,6 +89,7 @@ public class MainActivity extends Activity implements Store.Listener {
         say("AI: grounded fallback, runs ONLY on unmatched titles. Tap AI to load a small"
                 + " on-device model (optional; app works without it).");
         say("Errors: " + safeReportPath());
+        Retention.init(this);
         refreshStatus();
     }
 
@@ -125,6 +126,8 @@ public class MainActivity extends Activity implements Store.Listener {
         btnAuto = btn("Auto: off", v -> doAuto());
         strip.addView(btnAuto);
         strip.addView(btn("AI", v -> doAi()));
+        strip.addView(btn("Exam", v -> doExam()));
+        strip.addView(btn("Wipe", v -> doWipe()));
         hs.addView(strip, lp(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(hs, lp(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -208,6 +211,80 @@ public class MainActivity extends Activity implements Store.Listener {
         MxService s = MxService.get();
         if (s != null) s.refreshNotification();
         refreshStatus();
+    }
+
+    /**
+     * Run the built-in exam over the real matching pipeline (plus the on-device
+     * LLM when it is loaded) and pay out the reward. The questions and the
+     * answer key live in {@link Exam}; scoring and points live in {@link Reward}.
+     */
+    private void doExam() {
+        LlmBrain brain = LlmBrain.get(this);
+        say("Studying, then exam (" + Exam.bank().size() + " questions, "
+                + (brain.ready() ? "with AI" : "deterministic") + ")...");
+        new Thread(() -> {
+            // Study the catalogue first, every time, exactly as production
+            // would prime its shorthand table before doing real work.
+            final Educate.Result study = Educate.study(MainActivity.this);
+            final Exam.Report rep = Exam.run(brain);
+            final Reward.Result res = Reward.award(MainActivity.this, rep);
+            ui.post(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append(study.line()).append("\n\n");
+                sb.append(res.line()).append("\n\n");
+                List<Exam.Item> fails = rep.failures();
+                if (!fails.isEmpty()) {
+                    sb.append("Missed ").append(fails.size()).append(":\n");
+                    int n = 0;
+                    for (Exam.Item it : fails) {
+                        if (n++ >= 8) {
+                            sb.append("  ...\n");
+                            break;
+                        }
+                        sb.append("  ").append(it.q.label)
+                                .append(" -> ").append(it.gotId == 0 ? "abstained" : String.valueOf(it.gotId))
+                                .append(" (want ")
+                                .append(it.q.expectId == 0 ? "abstain" : String.valueOf(it.q.expectId))
+                                .append(")\n");
+                    }
+                    sb.append("\n");
+                }
+                sb.append(Reward.detail());
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Exam \u2014 " + Reward.gradeInWords(res.grade))
+                        .setMessage(sb.toString())
+                        .setPositiveButton("OK", null)
+                        .setNeutralButton("Reset rewards", (d, w) -> {
+                            Reward.reset();
+                            refreshStatus();
+                            say("Rewards reset.");
+                        })
+                        .show();
+                refreshStatus();
+                MxService s = MxService.get();
+                if (s != null) s.refreshNotification();
+            });
+        }, "mx-exam").start();
+    }
+
+    private void doWipe() {
+        new AlertDialog.Builder(this)
+                .setTitle("Wipe bridge history?")
+                .setMessage("Clears all observed rows, the watched ledger and the cached "
+                        + "MAL snapshot. Aliases and the error log are kept. "
+                        + "The automatic weekly purge will then count seven days "
+                        + "from now.")
+                .setPositiveButton("Wipe now", (d, w) -> {
+                    Retention.init(this);
+                    int n = Retention.purgeNow(this);
+                    say("Wipe done: " + n + " rows cleared. " + Retention.statusLine() + ".");
+                    adapter.notifyDataSetChanged();
+                    refreshStatus();
+                    MxService s = MxService.get();
+                    if (s != null) s.refreshNotification();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void doAi() {
@@ -543,6 +620,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 + " | planned " + planned
                 + " | auto " + (Store.autoApply() ? "ON" : "off")
                 + " | ai " + LlmBrain.get(this).status()
+                + " | " + Retention.statusLine()
                 + sync);
         btnAuto.setText(Store.autoApply() ? "Auto: ON" : "Auto: off");
     }
@@ -637,8 +715,11 @@ public class MainActivity extends Activity implements Store.Listener {
             }
 
             Store.Row r = Store.all().get(position);
-            h.title.setText(r.title);
-
+            if (!r.parsedTitle.isEmpty()) {
+                h.title.setText(r.parsedTitle + (r.ep > 0 ? " · ep " + r.ep : ""));
+            } else {
+                h.title.setText(r.title);
+            }
             StringBuilder meta = new StringBuilder(r.state);
             if (r.ep > 0) meta.append(" | ep ").append(r.ep);
             if (!r.duration.isEmpty()) meta.append(" | ").append(r.duration);
@@ -646,6 +727,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 meta.append("\nMAL: ").append(r.matchTitle);
                 if (r.numEp > 0) meta.append(" (").append(r.numEp).append(" eps)");
             }
+            meta.append("\n").append(r.title);
             h.meta.setText(meta.toString());
 
             if (!r.planText.isEmpty()) {

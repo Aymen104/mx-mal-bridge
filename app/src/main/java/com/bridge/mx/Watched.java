@@ -99,6 +99,18 @@ public final class Watched {
         return pct.size();
     }
 
+    /**
+     * Wipe the whole watched ledger (used by the 7-day history purge).
+     *
+     * @return number of episode entries removed
+     */
+    public static synchronized int clear() {
+        int n = pct.size();
+        pct.clear();
+        save();
+        return n;
+    }
+
     private static void save() {
         if (prefs == null) return;
         try {

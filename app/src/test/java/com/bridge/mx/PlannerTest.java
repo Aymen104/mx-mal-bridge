@@ -96,6 +96,64 @@ public class PlannerTest {
     }
 
     @Test
+    public void featureLengthMovieNumberIsNotAnEpisode() {
+        // Shibou Yuugi de Meshi wo Kuu. 44: Cloudy Beach is a 1-episode MOVIE
+        // (90 min). Its "44" is part of the title, not episode 44; the file was
+        // never watched. It must complete 1/1 at most, never "watching 44".
+        Store.Row r = row("shibou", "Shibou Yuugi de Meshi wo Kuu - 44-Cloudy Beach",
+                "finished", 1);
+        r.duration = "1:30:28";
+        r.matchId = 63819;
+        Planner.rebuild();
+        assertEquals("completed", r.planStatus);
+        assertEquals(1, r.planEps); // never 44
+    }
+
+    @Test
+    public void singleEpisodeEntryIgnoresNumberInTitle() {
+        // Even without a duration, a single-episode MAL entry has no episode
+        // numbering, so a digit in the name is a title artefact.
+        Store.Row r = row("movie44", "Some Movie - 44 - Cloudy Beach", "finished", 1);
+        r.matchId = 60001;
+        Planner.rebuild();
+        assertEquals("completed", r.planStatus);
+        assertEquals(1, r.planEps);
+    }
+
+    @Test
+    public void shortFormOnaStillCountsEpisodes() {
+        // The "Youjo Shenki 2" ONA has ~2-minute episodes: still a numbered
+        // episode, NOT a movie. Duration only un-numbers feature-length files.
+        Store.Row r = row("shenki2", "Youjo Shenki 2 - 10", "finished", 12);
+        r.duration = "02:00";
+        r.matchId = 64577;
+        Planner.rebuild();
+        assertEquals("watching", r.planStatus);
+        assertEquals(10, r.planEps);
+    }
+
+    @Test
+    public void featureLengthFileOnMultiEpisodeEntryWritesNothing() {
+        // A 100-minute file parsed as episode 44 of a 12-episode series: the
+        // number is a title/index artefact, so no progress may be invented.
+        Store.Row r = row("long", "Long Show - 44", "finished", 12);
+        r.duration = "1:40:00";
+        r.matchId = 60002;
+        Planner.rebuild();
+        assertEquals("", r.planStatus);
+        assertEquals(-1, r.planEps);
+    }
+
+    @Test
+    public void durationSecondsParsing() {
+        assertEquals(5428, Planner.seconds("1:30:28"));
+        assertEquals(1420, Planner.seconds("23:40"));
+        assertEquals(120, Planner.seconds("02:00"));
+        assertEquals(-1, Planner.seconds(""));
+        assertEquals(-1, Planner.seconds(null));
+    }
+
+    @Test
     public void unknownWritesNothing() {
         Store.Row r = row("t-unk", "Mystery Show EP 02", "unknown", 12);
         Planner.rebuild();

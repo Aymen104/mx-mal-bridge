@@ -79,17 +79,26 @@ public class Planner {
             Store.Row rep = null;
             int repContrib = -1;
 
+            // MAL total first: a single-entry title (movie) or a feature-length
+            // file carries no episode numbering, so a digit in its name is a
+            // title artefact, not an episode. This is what "Shibou Yuugi de Meshi
+            // wo Kuu. 44: Cloudy Beach" showed: a 1-episode MOVIE whose "44" is
+            // part of the title, wrongly written as "44 episodes watched".
             for (Store.Row r : g) {
                 if (r.numEp > malTotal) malTotal = r.numEp;
-                if (r.ep <= 0) {
-                    // Unnumbered file: only meaning for an explicitly finished
-                    // single-episode entry (movie), handled after the loop.
+            }
+
+            for (Store.Row r : g) {
+                int ef = effectiveEpisode(r, malTotal);
+                if (ef <= 0) {
+                    // Unnumbered (or feature-length) file: only meaning for an
+                    // explicitly finished single-episode entry, handled below.
                     continue;
                 }
-                if (r.ep > groupMaxEp) groupMaxEp = r.ep;
+                if (ef > groupMaxEp) groupMaxEp = ef;
 
                 String state = r.state;
-                int contrib = episodeValue(state, r.ep);
+                int contrib = episodeValue(state, ef);
                 if (contrib > series) series = contrib;
                 if ("finished".equals(state) || "watching".equals(state)
                         || "present".equals(state)) {
@@ -134,7 +143,7 @@ public class Planner {
                 if (malTotal == 1) {
                     Store.Row movie = null;
                     for (Store.Row r : g) {
-                        if (r.ep <= 0 && "finished".equals(r.state)) {
+                        if (effectiveEpisode(r, malTotal) <= 0 && "finished".equals(r.state)) {
                             movie = r;
                             break;
                         }
@@ -223,6 +232,46 @@ public class Planner {
      * finished -> the episode itself; watching/present -> the episode BEFORE it
      * (reached but not finished); new/unknown/none -> nothing.
      */
+    /**
+     * The episode index to trust for progress. Returns 0 (no episode) when the
+     * source file cannot plausibly be a numbered episode:
+     * <ul>
+     *   <li>it has no parsed number, or</li>
+     *   <li>the matched entry is a single-episode title (a movie/special has no
+     *       episode numbering), or</li>
+     *   <li>the file is feature-length (&ge; 40 min) — an episode number is then
+     *       almost certainly a digit inside the title, not an episode index.</li>
+     * </ul>
+     * Duration is the tell: a real TV episode is ~24 min, the "Youjo Shenki 2"
+     * short-form ONA is ~2 min, and a movie is 40 min+. A short file is still a
+     * normal episode; only feature-length files are treated as unnumbered.
+     */
+    private static int effectiveEpisode(Store.Row r, int malTotal) {
+        if (r.ep <= 0) return 0;
+        if (malTotal == 1) return 0;
+        if (isFeatureLength(r.duration)) return 0;
+        return r.ep;
+    }
+
+    /** True for a feature-length file (&ge; 40 min): a movie, not an episode. */
+    static boolean isFeatureLength(String duration) {
+        return seconds(duration) >= 40 * 60;
+    }
+
+    /** "h:mm:ss" or "m:ss" to seconds, or -1 when unknown/unparseable. */
+    static int seconds(String duration) {
+        if (duration == null) return -1;
+        String[] p = duration.trim().split(":");
+        if (p.length < 2 || p.length > 3) return -1;
+        try {
+            int s = 0;
+            for (String x : p) s = s * 60 + Integer.parseInt(x.trim());
+            return s;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
     private static int episodeValue(String state, int ep) {
         if ("finished".equals(state)) return ep;
         if ("watching".equals(state) || "present".equals(state)) return ep - 1;

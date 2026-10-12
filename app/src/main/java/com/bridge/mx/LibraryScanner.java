@@ -2,10 +2,13 @@ package com.bridge.mx;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.os.Build;
+import android.os.Environment;
 import android.provider.MediaStore;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -27,6 +30,12 @@ import java.util.regex.Pattern;
  *
  * The scan is scoped to built-in ("primary") storage: the removable SD card is
  * ignored on purpose.
+ *
+ * <p>It is additionally scoped to the Download folder. Only videos that live
+ * under {@code /storage/emulated/0/Download} (the tree, so sub-folders such as
+ * {@code Download/2- Anime/...} are included) are considered; any video stored
+ * anywhere else on the device is ignored, so this bridge only ever reflects the
+ * user's downloaded library.
  */
 public class LibraryScanner {
 
@@ -58,6 +67,39 @@ public class LibraryScanner {
     }
 
     /**
+     * Absolute-lowercase path of a MediaStore row, or null when it cannot be
+     * determined. API 29+ exposes {@code RELATIVE_PATH} ("Download/…/" relative
+     * to primary storage); older releases expose the absolute {@code DATA}.
+     */
+    private static String rowPath(Cursor c, int col) {
+        if (col < 0) return null;
+        String v = c.getString(col);
+        if (v == null || v.isEmpty()) return null;
+        if (Build.VERSION.SDK_INT >= 29) {
+            // RELATIVE_PATH is relative to the volume root and has no leading '/'.
+            String rel = v.startsWith("/") ? v : "/" + v;
+            return rel.toLowerCase(Locale.ROOT);
+        }
+        return v.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * True when the row's path is inside the Download tree (or undeterminable
+     * on a platform where the column is unavailable).
+     */
+    private static boolean inDownload(Cursor c, int col) {
+        if (col < 0) return true; // platform exposes no path column: cannot filter
+        String p = rowPath(c, col);
+        if (p == null) return false; // present column but no path: be strict
+        if (Build.VERSION.SDK_INT >= 29) {
+            // p = "/Download/…" on primary volume.
+            return p.startsWith("/download/");
+        }
+        String base = Environment.getExternalStorageDirectory().getAbsolutePath().toLowerCase(Locale.ROOT);
+        return p.startsWith(base + "/download/");
+    }
+
+    /**
      * Scan MediaStore and upsert one "present" row per parsed series.
      * Returns the number of series recorded.
      */
@@ -66,9 +108,11 @@ public class LibraryScanner {
         Map<String, Integer> bestEp = new HashMap<>();
         Cursor c = null;
         try {
+            boolean modern = Build.VERSION.SDK_INT >= 29;
             String[] proj = {
                     MediaStore.Video.Media._ID,
-                    MediaStore.Video.Media.DISPLAY_NAME
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    modern ? MediaStore.Video.Media.RELATIVE_PATH : MediaStore.Video.Media.DATA
             };
             c = ctx.getContentResolver().query(
                     videoUri(), proj,
@@ -78,7 +122,11 @@ public class LibraryScanner {
                 return 0;
             }
             int nameCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME);
+            int pathCol = modern
+                    ? c.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH)
+                    : c.getColumnIndex(MediaStore.Video.Media.DATA);
             while (c.moveToNext()) {
+                if (!inDownload(c, pathCol)) continue;
                 String name = c.getString(nameCol);
                 if (name == null || !HAS_EP.matcher(name).find()) continue;
                 EpisodeParser.Parsed p = EpisodeParser.parse(name);
@@ -108,7 +156,7 @@ public class LibraryScanner {
         int added = 0;
         for (Map.Entry<String, Integer> e : bestEp.entrySet()) {
             String nk = e.getKey();
-            String key = "lib:" + nk;
+            String key = Store.canon(bestName.get(nk));
             keep.add(key);
             Store.Row r = new Store.Row();
             r.key = key;
@@ -119,6 +167,7 @@ public class LibraryScanner {
             // match even when a newer (higher) episode file changes the title.
             r.parsedTitle = parseTitle(bestName.get(nk));
             r.ep = e.getValue();
+            r.fromLib = true;
             Store.upsert(r);
             added++;
         }
