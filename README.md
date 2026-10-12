@@ -191,6 +191,17 @@ QA hook (deterministic, no UI taps): `adb shell am start -n
 com.bridge.mx/.MainActivity --ez self_test true` runs the exam + escalation on
 launch.
 
+Title-refresh QA hooks (deterministic, no UI taps):
+
+```powershell
+# Force the animeTosho refresh + study + exam of any new bulk:
+adb shell am start -n com.bridge.mx/.MainActivity --ez titles true
+# Point the crawl at a local mirror of the listing (saved page bodies) instead
+# of the live site — for exercising the full pipeline offline. Works behind
+# `adb reverse tcp:8890 tcp:8890` with a server on 127.0.0.1:8890:
+adb shell am start -n com.bridge.mx/.MainActivity --ez titles true --es at_base http://127.0.0.1:8890
+```
+
 ## Build
 
 Plain Gradle project — Java only (AGP 8.7.0, JDK 17, SDK 34). The only runtime

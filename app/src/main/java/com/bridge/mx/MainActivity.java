@@ -100,6 +100,11 @@ public class MainActivity extends Activity implements Store.Listener {
         if (getIntent() != null && getIntent().getBooleanExtra("titles", false)) {
             getWindow().getDecorView().postDelayed(this::doTitles, 1200);
         }
+        // QA hook: `--es at_base http://<host>:<port>` points the crawl at a
+        // local mirror of the listing (saved bodies) instead of the live site.
+        if (getIntent() != null) {
+            Catalogue.baseOverride = getIntent().getStringExtra("at_base");
+        }
     }
 
     // ------------------------------------------------------- UI from code

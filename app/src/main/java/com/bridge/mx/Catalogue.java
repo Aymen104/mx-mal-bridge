@@ -54,6 +54,14 @@ public final class Catalogue {
 
     /** The source is animeTosho — the .net mirror only, per directive (no .org). */
     static final String[] BASES = {"https://animetosho.net"};
+
+    /**
+     * QA hook: a one-shot base-URL override so the crawl can be pointed at a
+     * local mirror (saved page bodies) for testing the full pipeline without
+     * hitting the live site. Set from the {@code at_base} intent extra;
+     * cleared on the next launch when the extra is absent.
+     */
+    static volatile String baseOverride = null;
     /** The listing ends at page 249 today; leave headroom. */
     static final int MAX_PAGES = 260;
     /** Past this page an empty listing is the real end, not a block. */
@@ -260,7 +268,7 @@ public final class Catalogue {
             int before = cat.size();
 
             Fetch best = null;
-            for (String base : BASES) {
+            for (String base : baseOverride != null ? new String[]{baseOverride} : BASES) {
                 Fetch r = fetchListing(base, cat);
                 if (r.reachedEnd) {
                     best = r;
@@ -289,8 +297,7 @@ public final class Catalogue {
                 return new Result(false, "titles: write failed (" + e.getMessage() + ")");
             }
             String line = "titles: " + cat.size() + " total (" + best.pages + " pages"
-                    + (best.added > 0 ? ", +" + best.added + " new" : ", up to date") + ")"
-                    + (best.added > 0 ? " | " : "");
+                    + (best.added > 0 ? ", +" + best.added + " new" : ", up to date") + ")";
             // Every new bulk of titles must be studied and pass the test before
             // it is trusted. If the pipeline regresses, say so loudly — the new
             // list stays (titles are additive) but the failure is not hidden.
