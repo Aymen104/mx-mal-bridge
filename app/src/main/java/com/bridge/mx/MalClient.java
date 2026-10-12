@@ -294,6 +294,39 @@ public class MalClient {
         return out;
     }
 
+    /**
+     * The user's whole list as animeId -> "status|num_watched|score". Same
+     * walk as {@link #myListStatus} but also carries the user's score, the
+     * "rated = genuine" discriminator used by {@link MalRepair} so a bogus
+     * write is never withdrawn from an entry the user actually engaged with.
+     */
+    public static Map<Integer, String> myListScores(Context c) {
+        Map<Integer, String> out = new HashMap<>();
+        for (int offset = 0; offset < 6000; offset += 300) {
+            try {
+                JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
+                        + offset + "&fields=list_status");
+                JSONArray data = j.optJSONArray("data");
+                if (data == null) break;
+                for (int i = 0; i < data.length(); i++) {
+                    JSONObject o = data.getJSONObject(i);
+                    JSONObject node = o.optJSONObject("node");
+                    JSONObject ls = o.optJSONObject("list_status");
+                    if (node == null || ls == null) continue;
+                    out.put(node.optInt("id", -1),
+                            ls.optString("status", "") + "|"
+                                    + ls.optInt("num_episodes_watched", 0) + "|"
+                                    + ls.optInt("score", 0));
+                }
+                if (data.length() < 300) break;
+            } catch (Exception e) {
+                Log.w(TAG, "myListScores page offset=" + offset + " failed", e);
+                break; // stop pagination on error, return what we have
+            }
+        }
+        return out;
+    }
+
     public static String me(Context c) throws Exception {
         return getJson(c, "users/@me?fields=id,name").optString("name", "?");
     }

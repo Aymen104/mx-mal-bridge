@@ -187,9 +187,42 @@ powershell -ExecutionPolicy Bypass -File tools\opencode_repair.ps1 -Wireless -Wa
 powershell -ExecutionPolicy Bypass -File tools\opencode_repair.ps1 -Serve -Port 8765
 ```
 
-QA hook (deterministic, no UI taps): `adb shell am start -n
+## Automatic MAL repair of bogus writes
+
+A 2026-10 bug made the color classifier read untagged neutral-grey rows
+(label-less files, 0x888888 and friends) as "finished" and push watch progress
+for them to the user's MAL account (31 writes / 23 series at the audit). MAL
+has no undo and the account is the user's proof-of-watch, so the app now
+repairs such writes **automatically** and conservatively:
+
+- **What qualifies**: a series whose rows still look like the artifact —
+  pushed (`applied != ""`), neutral-grey untagged, with no playback evidence
+  (row watched %, watched ledger, or a real non-grey tag on ANY sibling row of
+  the series). A series with any real evidence is never touched.
+- **When it withdraws**: only when MAL currently holds *exactly* what we
+  pushed (same status and episode count) **and** the entry has no user score
+  ("rated = genuine"). Anything the user rated or has since moved on is left
+  alone.
+- **How**: `plan_to_watch|0` (MAL v2 has no delete endpoint; this erases the
+  watched count/score). Rows are neutralized to `none` + `plan_to_watch|0`
+  and the series id is shielded so it can never be re-pushed from artifact
+  rows. If real evidence later appears (playback/tag/ledger), the shield lifts
+  automatically and the rows are handed back to the normal pipeline.
+- **When**: once a day from the background service (`MalRepair.autoRepair`), or
+  on demand via the Repair button / QA hook below.
+
+QA hooks (deterministic, no UI taps): `adb shell am start -n
 com.bridge.mx/.MainActivity --ez self_test true` runs the exam + escalation on
 launch.
+
+MAL-repair QA hooks:
+
+```powershell
+# Dry run: plan the repair, write nothing (prints the would-be counts):
+adb shell am start -n com.bridge.mx/.MainActivity --ez repair_dry true
+# Live run: withdraw the bogus writes now (no 24h cooldown):
+adb shell am start -n com.bridge.mx/.MainActivity --ez repair true
+```
 
 Title-refresh QA hooks (deterministic, no UI taps):
 

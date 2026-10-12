@@ -100,6 +100,16 @@ public class MainActivity extends Activity implements Store.Listener {
         if (getIntent() != null && getIntent().getBooleanExtra("titles", false)) {
             getWindow().getDecorView().postDelayed(this::doTitles, 1200);
         }
+        // QA hook: `--ez repair true` runs the automatic MAL repair live
+        // (withdraws bogus writes; see MalRepair) instead of waiting for the
+        // next daily service pass.
+        if (getIntent() != null && getIntent().getBooleanExtra("repair", false)) {
+            getWindow().getDecorView().postDelayed(this::doRepair, 1200);
+        }
+        // QA hook: `--ez repair_dry true` plans the repair with NO writes.
+        if (getIntent() != null && getIntent().getBooleanExtra("repair_dry", false)) {
+            getWindow().getDecorView().postDelayed(this::doRepairDry, 1200);
+        }
         // QA hook: `--es at_base http://<host>:<port>` points the crawl at a
         // local mirror of the listing (saved bodies) instead of the live site.
         if (getIntent() != null) {
@@ -143,6 +153,7 @@ public class MainActivity extends Activity implements Store.Listener {
         strip.addView(btn("Exam", v -> doExam()));
         strip.addView(btn("Test", v -> doTest()));
         strip.addView(btn("Titles", v -> doTitles()));
+        strip.addView(btn("Repair", v -> doRepair()));
         strip.addView(btn("Wipe", v -> doWipe()));
         hs.addView(strip, lp(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -345,6 +356,41 @@ public class MainActivity extends Activity implements Store.Listener {
                 refreshStatus();
             });
         }, "mx-test").start();
+    }
+
+    /**
+     * Automatic MAL repair: withdraws bogus writes (untagged grey rows that
+     * got pushed as watched) back to plan_to_watch|0, keeping anything the
+     * user rated or has since moved on. See MalRepair for the exact rules.
+     */
+    private void doRepair() {
+        say("Repairing bogus MAL writes...");
+        new Thread(() -> {
+            final MalRepair.Result r = MalRepair.repairNow(MainActivity.this);
+            ui.post(() -> {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("MAL repair")
+                        .setMessage(r.line
+                                + "\nshielded series: " + MalRepair.shieldedCount(MainActivity.this)
+                                + "\n\n(revert log lines are in error-report.log)")
+                        .setPositiveButton("OK", null)
+                        .show();
+                refreshStatus();
+            });
+        }, "mx-repair").start();
+    }
+
+    /** QA: plan the repair without writing anything to MAL or apps state. */
+    private void doRepairDry() {
+        say("Planning MAL repair (dry)...");
+        new Thread(() -> {
+            final MalRepair.Result r = MalRepair.dryRun(MainActivity.this);
+            ui.post(() -> new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("MAL repair (dry)")
+                    .setMessage(r.line)
+                    .setPositiveButton("OK", null)
+                    .show());
+        }, "mx-repair-dry").start();
     }
 
     private void doWipe() {

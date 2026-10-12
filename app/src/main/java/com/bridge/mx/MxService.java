@@ -810,7 +810,7 @@ public class MxService extends AccessibilityService {
             }
             if (auto && loggedIn && cur != null) {
                 for (Store.Row r : Store.all()) {
-                    if (!actionable(r) || !pushable(r)) continue;
+                    if (!actionable(r) || !pushable(r) || MalRepair.pushBlocked(this, r)) continue;
                     String sig = r.planStatus + "|" + r.planEps;
                     String mal = cur == null ? null : cur.get(r.matchId);
                     // "mal" is exactly what WE last wrote, but the plan moved on
@@ -862,6 +862,20 @@ public class MxService extends AccessibilityService {
                         Report.err("sync.apply", "update failed for '" + r.title + "'", t);
                     }
                 }
+            }
+
+            if (loggedIn) {
+                // Automatic withdrawal of bogus MAL writes (see MalRepair): the
+                // once-a-day cooldown makes this cheap on every tick, and it
+                // runs on its own thread so a slow MAL pass never stalls the
+                // rest of the sync.
+                new Thread(() -> {
+                    try {
+                        MalRepair.autoRepair(this);
+                    } catch (Throwable t) {
+                        Report.err("sync.repair", "mal repair failed", t);
+                    }
+                }, "mal-repair").start();
             }
 
             Store.save();

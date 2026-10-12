@@ -57,6 +57,12 @@ public final class ColorClassify {
         return spread <= NEUTRAL_SPREAD;
     }
 
+    /** Packed-ARGB convenience (0xAARRGGBB): true when the pixel is grey. */
+    static boolean isNeutral(int rgb) {
+        int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+        return isNeutral(r, g, b);
+    }
+
     static int dist2(int r, int g, int b, int[] c) {
         int dr = r - c[0], dg = g - c[1], db = b - c[2];
         return dr * dr + dg * dg + db * db;

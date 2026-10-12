@@ -99,6 +99,11 @@ public final class Watched {
         return pct.size();
     }
 
+    /** Read-only copy of the ledger for pure computation (e.g. MalRepair). */
+    public static synchronized Map<String, Integer> snapshot() {
+        return new LinkedHashMap<>(pct);
+    }
+
     /**
      * Wipe the whole watched ledger (used by the 7-day history purge).
      *
