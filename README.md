@@ -143,10 +143,10 @@ refreshing needs no login and never touches the user's list.
 
 - **Bundled bulk:** `app/src/main/assets/anime_titles.txt` — the scraped series
   set (≈9,952 titles) ships inside the APK. First run always works offline.
-- **Refresh:** `Catalogue.refresh()` walks `animetosho.org/animes?page=N`
-  (falling back to `.net`), gzip-aware, ~40 rows/page, then **merges
-  only-add** onto the current list — a refresh can never delete a title.
-  Written atomically to `filesDir/catalogue.txt`.
+- **Refresh:** `Catalogue.refresh()` walks `animetosho.net/animes?page=N`
+  (animeTosho, **.net only** per directive — no `.org`), gzip-aware,
+  ~40 rows/page, then **merges only-add** onto the current list — a refresh can
+  never delete a title. Written atomically to `filesDir/catalogue.txt`.
 - **Cadence:** considered stale after **75 days** (the "2–3 months" window),
   with a 1-day retry back-off on failure. The background service refreshes
   itself on its own thread when stale; the **Titles** button forces it.

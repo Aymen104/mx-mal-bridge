@@ -52,19 +52,30 @@ public final class Catalogue {
     /** Do not retry a failed refresh more than once a day. */
     static final long RETRY_MS = 24L * 60 * 60 * 1000;
 
-    /** animeTosho mirrors, tried in order. */
-    static final String[] BASES = {"https://animetosho.org", "https://animetosho.net"};
+    /** The source is animeTosho — the .net mirror only, per directive (no .org). */
+    static final String[] BASES = {"https://animetosho.net"};
     /** The listing ends at page 249 today; leave headroom. */
     static final int MAX_PAGES = 260;
+    /** Past this page an empty listing is the real end, not a block. */
+    static final int KNOWN_END_PAGE = 245;
     /** Politeness delay between listing pages. */
     static final long PAGE_DELAY_MS = 180;
 
-    /** One listing row: href="/series/<id>" ... ><strong>Title</strong>. */
+    /**
+     * One listing row: an anchor to a {@code /series/} URL whose id tail is a
+     * <em>number</em> — the classic numeric form ({@code /series/12345}, served
+     * by {@code .net}) or a slug form ending in an id
+     * ({@code /series/foo-bar.12345}). Non-numeric pseudo-categories such as
+     * {@code /series/unsorted} ("Unsorted Files") are rejected; a real series
+     * id is always numeric. The anchor's first child is a {@code <strong>}
+     * title that may itself carry a {@code title=} attribute.
+     */
     private static final Pattern ROW = Pattern.compile(
-            "href=\"/series/(\\d+)\"[^>]*><strong>(.*?)</strong>", Pattern.DOTALL);
+            "href=\"[^\"]*?/series/(?:\\d+|[^\"/]*\\.\\d+)\"[^>]*><strong[^>]*>(.*?)</strong>",
+            Pattern.DOTALL);
 
     private static final String UA =
-            "Mozilla/5.0 (Linux; Android) MxSyncBridge/1.2 (personal; polite)";
+            "Mozilla/5.0 (Linux; Android) MxSyncBridge/1.4 (personal; polite)";
 
     private static final String PREF = "mxmeta";
     private static final String KEY_AT = "catalogue_at";
@@ -123,7 +134,7 @@ public final class Catalogue {
         while (m.find()) {
             // Strip any inline markup first, then decode entities, so a decoded
             // "&lt;OAV&gt;" is not mistaken for a tag and eaten.
-            String t = m.group(2).replaceAll("<[^>]+>", " ").trim();
+            String t = m.group(1).replaceAll("<[^>]+>", " ").trim();
             t = htmlDecode(t).trim();
             if (!t.isEmpty()) out.add(t);
         }
@@ -257,11 +268,18 @@ public final class Catalogue {
                 }
                 if (best == null || r.pages > best.pages) best = r;
             }
-            if (best == null || (!best.reachedEnd && best.pages == 0)) {
-                return new Result(false, "titles: animeTosho unreachable (kept " + before + ")");
+            if (best == null || best.blocked || (!best.reachedEnd && best.pages == 0)) {
+                String why = best == null || best.pages == 0 ? "unreachable"
+                        : (best.blocked ? "blocked" : "no data");
+                String line = "titles: animeTosho.net " + why + " (kept " + before + ")";
+                Report.warn("catalogue", line);
+                return new Result(false, line);
             }
             if (!best.reachedEnd && best.added == 0) {
-                return new Result(false, "titles: animeTosho partial read (kept " + before + ")");
+                String line = "titles: animeTosho.net partial read, " + best.pages
+                        + " pages (kept " + before + ")";
+                Report.warn("catalogue", line);
+                return new Result(false, line);
             }
             try {
                 writeAtomic(cacheFile(c), cat);
@@ -270,9 +288,9 @@ public final class Catalogue {
                 Report.err("catalogue", "catalogue write failed", e);
                 return new Result(false, "titles: write failed (" + e.getMessage() + ")");
             }
-            String line = best.added > 0
-                    ? "titles: " + cat.size() + " total (+" + best.added + " new from animeTosho)"
-                    : "titles: up to date (" + cat.size() + ")";
+            String line = "titles: " + cat.size() + " total (" + best.pages + " pages"
+                    + (best.added > 0 ? ", +" + best.added + " new" : ", up to date") + ")"
+                    + (best.added > 0 ? " | " : "");
             // Every new bulk of titles must be studied and pass the test before
             // it is trusted. If the pipeline regresses, say so loudly — the new
             // list stays (titles are additive) but the failure is not hidden.
@@ -301,6 +319,7 @@ public final class Catalogue {
     /** Outcome of walking one base URL's listing. */
     static final class Fetch {
         boolean reachedEnd;
+        boolean blocked;
         int added;
         int pages;
     }

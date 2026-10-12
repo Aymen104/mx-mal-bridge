@@ -32,6 +32,26 @@ public class CatalogueTest {
     }
 
     @Test
+    public void parsesSlugLinkedRowsAndStrongTitleAttributes() {
+        // .net serves numeric /series/12345, but mirrors have shipped slug
+        // links (https://animetosho.org/series/foo-bar.12345) and <strong>
+        // tags carrying their own title= attribute. Match all three forms.
+        String html = "<div class=\"home_list_entry\">\n"
+                + "<a href=\"https://animetosho.org/series/onegai-aipri.19850\"><strong>Onegai AiPri</strong></a>\n"
+                + "<a href=\"https://animetosho.org/series/lupin-sansei-babylon.989\">"
+                + "<strong title=\"Lupin III: The Legend of the Gold of Babylon\">"
+                + "Lupin Sansei: Babylon no Ougon Densetsu</strong></a>\n"
+                + "<a href=\"/series/6286\"><strong>Kanojo no Tomodachi</strong></a>\n"
+                + "<a href=\"/series/unsorted\"><strong>Unsorted Files</strong></a>\n"
+                + "</div>";
+        List<String> got = Catalogue.parseListing(html);
+        assertEquals(Arrays.asList(
+                "Onegai AiPri",
+                "Lupin Sansei: Babylon no Ougon Densetsu",
+                "Kanojo no Tomodachi"), got);
+    }
+
+    @Test
     public void decodesEntitiesInTitles() {
         assertEquals("Foo & Bar 'X'", Catalogue.htmlDecode("Foo &amp; Bar &#39;X&#39;"));
         assertEquals("A\u2014B", Catalogue.htmlDecode("A&mdash;B"));

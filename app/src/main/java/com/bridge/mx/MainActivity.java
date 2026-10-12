@@ -96,6 +96,10 @@ public class MainActivity extends Activity implements Store.Listener {
         if (getIntent() != null && getIntent().getBooleanExtra("self_test", false)) {
             getWindow().getDecorView().postDelayed(this::doTest, 800);
         }
+        // QA hook: `--ez titles true` forces the animeTosho refresh + study + exam.
+        if (getIntent() != null && getIntent().getBooleanExtra("titles", false)) {
+            getWindow().getDecorView().postDelayed(this::doTitles, 1200);
+        }
     }
 
     // ------------------------------------------------------- UI from code
