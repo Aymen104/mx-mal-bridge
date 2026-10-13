@@ -38,7 +38,9 @@ public class Matcher {
     /** Score at/above which the deterministic result is trusted when the brain
      * is unavailable or abstains (the on-device LLM is the priority matcher). */
     private static final double CONFIDENT = 0.85;
-    /** Minimum score for a fallback match when no brain answers. */
+    /** Minimum score for a fallback match when no brain answers — and the
+     *  signal floor below which a ready brain also abstains (no candidate is
+     *  genuinely related; the closest lookalike must not win). */
     private static final double ACCEPT = 0.50;
     /** How many top candidates to offer a brain. */
     private static final int BRAIN_TOP_N = 8;
@@ -82,7 +84,15 @@ public class Matcher {
         // LLM first: a ready brain decides every match, even the ones the
         // deterministic scorer is already confident about. The brain is
         // grounded (real candidates only), so its verdict is always safe.
-        if (brain != null && brain.ready()) {
+        //
+        // One guard rails the LLM's power: it only votes when a plausible
+        // candidate carries a real signal (best plausible score at/above
+        // ACCEPT). Below that nothing is genuinely related to the file's
+        // title and the required answer is an abstention — the closest
+        // lookalike must not win (false friends like "Koi wo Shitai" vs
+        // "Chuunibyou demo Koi ga Shitai!" are exactly how noise got pushed).
+        if (brain != null && brain.ready()
+                && !pool.isEmpty() && pool.get(0).s >= ACCEPT) {
             List<MatchBrain.Candidate> cands = new ArrayList<>();
             int n = Math.min(pool.size(), BRAIN_TOP_N);
             for (int i = 0; i < n; i++) {

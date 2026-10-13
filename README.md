@@ -82,6 +82,8 @@ the background service may write anything on its own.
   LLM is loaded it decides every title match (it is consulted before the
   deterministic scorer, which stays as the fallback when the model is absent or
   abstains), so the strongest matcher is always given priority over heuristics.
+  Rows whose best candidate stays below the acceptance floor are never guessed:
+  they abstain, so false friends and clips are not pushed.
 - **Download-only scope, enforced at observation:** accessibility rows expose
   only a display title (no path), so an observed row is admitted only when its
   canonical key also exists in the Download library allowlist built by the
@@ -122,19 +124,25 @@ Readable over `adb shell cat` (external files dir, no root / run-as needed).
    whole-string containment and token overlap, penalises entries whose episode
    count is below the highest episode seen (`Gin S1` **EP 48** → the 201-ep
    *Gintama*, never a 12-ep special), and consults a shorthand alias table
-   (`Gin S1` → *Gintama*). Titles that stay unmatched are offered to the
-   optional on-device LLM (see below).
+   (`Gin S1` → *Gintama*). Titles that carry a real signal are decided by the on-device LLM when it is
+   loaded (see below); a title below the signal floor abstains.
 7. **Apply** — confirmation dialog, then rate-limited writes (~700 ms apart) —
    or enable **Auto** for background sync. The user's current MAL list is
    snapshotted first, so a write can never downgrade a manual completion or
    lower a watched count.
 
-## On-device AI match fallback (optional)
+## On-device AI matcher (priority, optional)
 
-`Match` and the background tick first run the deterministic matcher. Only when
-a title is **not matched confidently** is a small local LLM consulted, and it
-may only pick from the real candidates MyAnimeList returned — it can never
-invent an id. Successful picks are remembered as aliases.
+`Match` and every background tick run the **on-device LLM first**: when the
+model is loaded it decides every title whose candidate pool carries a real
+signal (best deterministic score at/above the acceptance floor) — including the
+ones the heuristic scorer is already confident about — and it may only pick from
+the real candidates MyAnimeList returned, so it can never invent an id. Its pick
+wins; the deterministic scorer is the fallback when the model is absent or
+abstains ("none fit"). Below the signal floor nothing is genuinely related to the
+file's title, so the row **abstains** — the closest lookalike is never pushed,
+which is what keeps false friends and clips out. Successful picks are remembered
+as aliases.
 
 - Model: **Qwen2.5-0.5B-Instruct**, Apache-2.0, run fully on the phone via
   MediaPipe LLM Inference on CPU. It is **not bundled** in the APK.
@@ -290,10 +298,11 @@ Enable once: **Settings ▸ Accessibility ▸ MX-MAL Bridge ▸ On**.
 - `LibraryScanner.java` — built-in-storage MediaStore scan (SD card excluded)
 - `EpisodeParser.java` — filename → title + episode
 - `Planner.java` — state + episode + match → planned MAL write (dry-run)
-- `Matcher.java` — deterministic MAL search-result scoring + score ranking
+- `Matcher.java` — deterministic MAL search-result scoring + LLM-first
+  orchestration with the acceptance/signal floor
 - `Aliases.java` / `AliasStore.java` — shorthand alias table + persistence
 - `MatchBrain.java` / `LlmBrain.java` / `Grounding.java` — grounded on-device
-  LLM fallback (prompt, parsing, MediaPipe engine)
+  LLM matcher (prompt, parsing, MediaPipe engine)
 - `MalClient.java` — PKCE login, token refresh, search, status update
 - `Store.java` — row persistence (SharedPreferences), change listeners
 - `Report.java` / `BridgeApp.java` — error reports + uncaught-exception capture

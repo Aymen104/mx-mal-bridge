@@ -74,12 +74,17 @@ public class MatcherTest {
     }
 
     @Test
-    public void brainResolvesUnmatchedFromRealCandidates() throws Exception {
+    public void belowSignalRowsAbstainEvenWhenBrainWouldGrab() throws Exception {
+        // "Gin S1" cannot be connected by the deterministic scorer (0.429 <
+        // ACCEPT). In production the learned alias table rewrites shorthand
+        // first (the self-test's 15/15 covers these via Aliases.apply), so a
+        // below-signal row must mean "not this anime": the closest lookalike
+        // must not win, and the brain is not even consulted (no inference is
+        // burned on a row that has no genuine candidate).
         JSONArray a = new JSONArray();
-        a.put(node(918, "Gintama", 201));
-        a.put(node(9969, "Gintama'", 51));
-        // Deterministic matching cannot connect "Gin S1" to Gintama; the
-        // grounded brain picks among the real candidates MAL returned.
+        a.put(node(918, "Gintama", 201, "tv", "finished_airing"));
+        a.put(node(9969, "Gintama'", 51, "tv", "finished_airing"));
+        final boolean[] called = {false};
         MatchBrain brain = new MatchBrain() {
             @Override
             public boolean ready() {
@@ -88,6 +93,7 @@ public class MatcherTest {
 
             @Override
             public int pick(String want, int ep, List<Candidate> cands) {
+                called[0] = true;
                 for (int i = 0; i < cands.size(); i++) {
                     if (cands.get(i).id == 918) return i;
                 }
@@ -95,7 +101,34 @@ public class MatcherTest {
             }
         };
         Matcher.Result r = Matcher.bestWithBrain(a, "Gin S1", 48, brain);
-        assertEquals(918, r.id);
+        assertNull(r);
+        assertFalse("below-signal rows must never reach the brain", called[0]);
+    }
+
+    @Test
+    public void falseFriendIsNeverPushed() throws Exception {
+        // "Koi wo Shitai" shares words with "Chuunibyou demo Koi ga Shitai!"
+        // (0.360 < ACCEPT) but is not that anime: the required answer is an
+        // abstention. Even an eager brain must not push the lookalike — that
+        // is exactly how noise got pushed before the repair system existed.
+        JSONArray a = new JSONArray();
+        a.put(node(14741, "Chuunibyou demo Koi ga Shitai!", 12, "tv", "finished_airing"));
+        final boolean[] called = {false};
+        MatchBrain brain = new MatchBrain() {
+            @Override
+            public boolean ready() {
+                return true;
+            }
+
+            @Override
+            public int pick(String want, int ep, List<Candidate> cands) {
+                called[0] = true;
+                return 0; // would grab the false friend
+            }
+        };
+        Matcher.Result r = Matcher.bestWithBrain(a, "Koi wo Shitai", 12, brain);
+        assertNull(r);
+        assertFalse("false friends must never reach the brain", called[0]);
     }
 
     @Test
@@ -152,7 +185,9 @@ public class MatcherTest {
         a.put(node(63816, "Sousou no Frieren: Ougonkyou-hen", 0, "tv", "not_yet_aired"));
         // Even though the brain would grab the "-hen" sequel, it is filtered
         // out (it has not aired), so the main 28-episode series must win.
-        Matcher.Result r = Matcher.bestWithBrain(a, "Friren", 28, grabs(63816));
+        // "Frieren" scores 0.867 — a real signal, so the brain is consulted
+        // with only the aired candidate on the table.
+        Matcher.Result r = Matcher.bestWithBrain(a, "Frieren", 28, grabs(63816));
         assertEquals(52991, r.id);
     }
 
@@ -161,8 +196,9 @@ public class MatcherTest {
         JSONArray a = new JSONArray();
         a.put(node(52991, "Sousou no Frieren", 28, "tv", "finished_airing"));
         a.put(node(59978, "Sousou no Frieren 2nd Season", 10, "tv", "finished_airing"));
-        // Episode 28 cannot come from a 10-episode later season.
-        Matcher.Result r = Matcher.bestWithBrain(a, "Friren", 28, grabs(59978));
+        // Episode 28 cannot come from a 10-episode later season, so the brain
+        // is offered only the aired 28-episode series.
+        Matcher.Result r = Matcher.bestWithBrain(a, "Frieren", 28, grabs(59978));
         assertEquals(52991, r.id);
     }
 
