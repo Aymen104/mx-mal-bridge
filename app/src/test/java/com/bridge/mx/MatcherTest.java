@@ -132,6 +132,30 @@ public class MatcherTest {
     }
 
     @Test
+    public void onlyImplausibleCandidateAbstainsEvenWhenBrainWouldGrab() throws Exception {
+        // The file is at episode 48 but the only MAL entry has just 12
+        // episodes: structurally impossible. The plausible pool is empty, so the
+        // brain must not be handed the raw top to grab.
+        JSONArray a = new JSONArray();
+        a.put(node(1, "Some Show", 12, "tv", "finished_airing"));
+        final boolean[] called = {false};
+        MatchBrain brain = new MatchBrain() {
+            @Override
+            public boolean ready() {
+                return true;
+            }
+
+            @Override
+            public int pick(String want, int ep, List<Candidate> cands) {
+                called[0] = true;
+                return 0;
+            }
+        };
+        assertNull(Matcher.bestWithBrain(a, "Some Show", 48, brain));
+        assertFalse("an impossible candidate must never reach the brain", called[0]);
+    }
+
+    @Test
     public void readyBrainWinsOverConfidentDeterministicMatch() throws Exception {
         // The LLM is the priority matcher: even when the deterministic scorer
         // is confident (0.85+), a ready brain is consulted and its grounded

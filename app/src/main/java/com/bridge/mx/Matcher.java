@@ -79,7 +79,13 @@ public class Matcher {
         for (Scored sc : ranked) {
             if (plausible(sc.r, want, ep)) pool.add(sc);
         }
-        if (pool.isEmpty()) pool = ranked; // nothing better to offer
+        // The brain is only ever shown structurally-plausible candidates. If
+        // none exist, the raw top is kept for the deterministic fallback below,
+        // but a ready brain must not be allowed to grab an impossible entry (a
+        // movie, an unaired sequel, or a season too short for the file's
+        // episode) — that is how a bad push could still slip through.
+        boolean plausiblePresent = !pool.isEmpty();
+        if (!plausiblePresent) pool = ranked; // nothing better to offer
 
         // LLM first: a ready brain decides every match, even the ones the
         // deterministic scorer is already confident about. The brain is
@@ -91,8 +97,8 @@ public class Matcher {
         // title and the required answer is an abstention — the closest
         // lookalike must not win (false friends like "Koi wo Shitai" vs
         // "Chuunibyou demo Koi ga Shitai!" are exactly how noise got pushed).
-        if (brain != null && brain.ready()
-                && !pool.isEmpty() && pool.get(0).s >= ACCEPT) {
+        if (brain != null && brain.ready() && plausiblePresent
+                && pool.get(0).s >= ACCEPT) {
             List<MatchBrain.Candidate> cands = new ArrayList<>();
             int n = Math.min(pool.size(), BRAIN_TOP_N);
             for (int i = 0; i < n; i++) {
