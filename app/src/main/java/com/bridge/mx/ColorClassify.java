@@ -35,12 +35,12 @@ public final class ColorClassify {
     static final int[] C_NORMAL = {53, 52, 76};      // dark indigo -> no label / unwatched
 
     /**
-     * Distance limit. The three centroids are ~132-149 apart, so 60 leaves a
-     * comfortable margin around each while keeping a clear "unknown" gap: a
-     * colour roughly halfway between grey and dark indigo is ~66 from both and
+     * Distance limit. The three centroids are ~132-149 apart, so 45 keeps a
+     * clean radius around each measured ink while a colour that is drifting
+     * toward another state (e.g. a bluish grey at ~59 from the grey centroid)
      * abstains rather than guessing.
      */
-    static final double MAX_DIST = 60;
+    static final double MAX_DIST = 45;
 
     private ColorClassify() {
     }

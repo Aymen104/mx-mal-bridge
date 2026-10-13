@@ -179,6 +179,17 @@ public class Store {
                     && ("finished".equals(old.state) || "none".equals(old.state))) {
                 r.state = old.state;
             }
+            // Nor may the persistent "Played X ago" line downgrade a grey
+            // "finished": on MX 3.3.1 a finished row still shows its played
+            // date, so the text would otherwise stomp the tag the classifier
+            // just read. The colour stays authoritative until the next
+            // classify pass re-reads it (which can also move it back to
+            // "watching" when the ink is blue again).
+            if ("finished".equals(old.state)
+                    && ("watching".equals(r.state) || "unknown".equals(r.state))) {
+                r.state = "finished";
+                if (r.rgb < 0) r.rgb = old.rgb;
+            }
             if (r.rgb < 0) r.rgb = old.rgb;
             if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
             // The played date is the list reader's persistent "touched" evidence:

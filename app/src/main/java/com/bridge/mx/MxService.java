@@ -429,57 +429,21 @@ public class MxService extends AccessibilityService {
             int l = Math.max(0, r.left), t = Math.max(0, r.top);
             int rr = Math.min(bw, r.right), bb = Math.min(bh, r.bottom);
             int w = rr - l, h = bb - t;
-            if (w < 8 || h < 8) continue;
-
-            int[] px = new int[w * h];
-            bmp.getPixels(px, 0, w, l, t, w, h);
-
-            long br = 0, bg = 0, bl = 0;
-            int bn = 0;
-            for (int c : px) {
-                if (Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200) {
-                    br += Color.red(c);
-                    bg += Color.green(c);
-                    bl += Color.blue(c);
-                    bn++;
+            int rgb = r.rgb;
+            // On-screen rows are re-sampled from this screenshot; rows that are
+            // scrolled off (or in a folder not shown) fall back to the colour we
+            // last measured for them, so the whole list converges to the same
+            // verdict the moment it is first seen — not only while visible.
+            if (w >= 8 && h >= 8) {
+                Integer sampled = sampleInk(bmp, l, t, w, h);
+                if (sampled != null) {
+                    rgb = sampled;
+                    r.rgb = sampled;
                 }
             }
-            if (bn < px.length / 12) continue; // dark theme / off-screen: skip
-            int BGr = (int) (br / bn), BGg = (int) (bg / bn), BGb = (int) (bl / bn);
-
-            Map<Integer, int[]> bins = new HashMap<>(); // key -> [count, rSum, gSum, bSum]
-            for (int c : px) {
-                int delta = Math.max(
-                        Math.abs(BGr - Color.red(c)),
-                        Math.max(Math.abs(BGg - Color.green(c)),
-                                Math.abs(BGb - Color.blue(c))));
-                if (delta < 90) continue;
-                int key = ((Color.red(c) >> 4) << 8) | ((Color.green(c) >> 4) << 4)
-                        | (Color.blue(c) >> 4);
-                int[] b = bins.get(key);
-                if (b == null) {
-                    b = new int[4];
-                    bins.put(key, b);
-                }
-                b[0]++;
-                b[1] += Color.red(c);
-                b[2] += Color.green(c);
-                b[3] += Color.blue(c);
-            }
-            if (bins.isEmpty()) continue;
-
-            int bestC = 0;
-            int[] best = null;
-            for (int[] b : bins.values()) {
-                if (b[0] > bestC) {
-                    bestC = b[0];
-                    best = b;
-                }
-            }
-            int mr = best[1] / best[0], mg = best[2] / best[0], mb = best[3] / best[0];
-            r.rgb = (mr << 16) | (mg << 8) | mb;
-
-            String verdict = ColorClassify.classify(mr, mg, mb);
+            if (rgb < 0) continue; // never sampled and not on screen
+            String verdict = ColorClassify.classify((rgb >> 16) & 0xFF,
+                    (rgb >> 8) & 0xFF, rgb & 0xFF);
             if (verdict == null) continue;
             boolean textState = "watching".equals(r.state) || "new".equals(r.state)
                     || "present".equals(r.state);
@@ -502,9 +466,66 @@ public class MxService extends AccessibilityService {
         if (any) {
             Store.save();
             Store.notifyChanged();
+            // A state flip changes episode N vs N-1 right now; do not wait for
+            // the slow pipeline tick to recompute the plan.
+            Planner.rebuild();
             updateNotification(null);
             Log.i(TAG, "classify: verdicts updated");
         }
+    }
+
+    /**
+     * Dominant non-background ink colour of one title box, or null when the box
+     * is not a light-theme title (dark theme / off-screen / no ink at all).
+     */
+    private Integer sampleInk(Bitmap bmp, int l, int t, int w, int h) {
+        int[] px = new int[w * h];
+        bmp.getPixels(px, 0, w, l, t, w, h);
+
+        long br = 0, bg = 0, bl = 0;
+        int bn = 0;
+        for (int c : px) {
+            if (Color.red(c) > 200 && Color.green(c) > 200 && Color.blue(c) > 200) {
+                br += Color.red(c);
+                bg += Color.green(c);
+                bl += Color.blue(c);
+                bn++;
+            }
+        }
+        if (bn < px.length / 12) return null; // dark theme / off-screen
+        int BGr = (int) (br / bn), BGg = (int) (bg / bn), BGb = (int) (bl / bn);
+
+        Map<Integer, int[]> bins = new HashMap<>(); // key -> [count, rSum, gSum, bSum]
+        for (int c : px) {
+            int delta = Math.max(
+                    Math.abs(BGr - Color.red(c)),
+                    Math.max(Math.abs(BGg - Color.green(c)),
+                            Math.abs(BGb - Color.blue(c))));
+            if (delta < 90) continue;
+            int key = ((Color.red(c) >> 4) << 8) | ((Color.green(c) >> 4) << 4)
+                    | (Color.blue(c) >> 4);
+            int[] b = bins.get(key);
+            if (b == null) {
+                b = new int[4];
+                bins.put(key, b);
+            }
+            b[0]++;
+            b[1] += Color.red(c);
+            b[2] += Color.green(c);
+            b[3] += Color.blue(c);
+        }
+        if (bins.isEmpty()) return null;
+
+        int bestC = 0;
+        int[] best = null;
+        for (int[] b : bins.values()) {
+            if (b[0] > bestC) {
+                bestC = b[0];
+                best = b;
+            }
+        }
+        int mr = best[1] / best[0], mg = best[2] / best[0], mb = best[3] / best[0];
+        return (mr << 16) | (mg << 8) | mb;
     }
 
     private static List<AccessibilityNodeInfo> flatten(AccessibilityNodeInfo root) {
