@@ -195,6 +195,19 @@ for them to the user's MAL account (31 writes / 23 series at the audit). MAL
 has no undo and the account is the user's proof-of-watch, so the app now
 repairs such writes **automatically** and conservatively:
 
+> **Known correction (Oct 13 2026):** the first daily auto-repair run
+> (Oct 12) withdrew **18 series** — and the user confirmed **every one was a
+> real watch**. In this deployment "no playback evidence" is *not* proof of
+> "not watched": (a) playback tracking (accessibility service) is off, so
+> watched % / ledger rarely record; and (b) the scan scope is
+> `/storage/emulated/0/Download` only, so files on the SD card (e.g. Uchi no
+> Shishou, 49533) are invisible to the app by design. All 18 were restored to
+> their true MAL states via API (the 14 still-flagged ones on Oct 13: watching
+> counts 1–15 + Youjo Shenki completed). The grey→`none` classifier fix is what
+> actually stops phantom writes; post-fix, grey rows never become pushable, so
+> this false-positive class cannot recur. The auto-repair remains inert unless
+> a future classifier regression re-creates grey-origin pushes.
+
 - **What qualifies**: a series whose rows still look like the artifact —
   pushed (`applied != ""`), neutral-grey untagged, with no playback evidence
   (row watched %, watched ledger, or a real non-grey tag on ANY sibling row of
