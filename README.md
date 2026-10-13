@@ -82,6 +82,12 @@ the background service may write anything on its own.
   LLM is loaded it decides every title match (it is consulted before the
   deterministic scorer, which stays as the fallback when the model is absent or
   abstains), so the strongest matcher is always given priority over heuristics.
+- **Download-only scope, enforced at observation:** accessibility rows expose
+  only a display title (no path), so an observed row is admitted only when its
+  canonical key also exists in the Download library allowlist built by the
+  MediaStore scan. Rows outside that tree — SD card, other folders, other
+  apps — are dropped on sight, and any already-stored offender is swept at the
+  next scan (the allowlist is primed at service start).
 - A low-priority status notification shows rows / planned / auto / countdown
   to the next sync.
 
@@ -104,9 +110,10 @@ Readable over `adb shell cat` (external files dir, no root / run-as needed).
    `localhost:8585`.
 2. Open the MX Player file list — rows are captured automatically (or tap
    **Scan**).
-3. **Lib** — scans **built-in storage only** (MediaStore, read-only) for
-   episode files and reads the episode number from each filename. The SD card
-   is intentionally ignored.
+3. **Lib** — scans the **Download folder on built-in storage only**
+   (MediaStore, read-only) for episode files and reads the episode number from
+   each filename. The SD card and every other folder are intentionally ignored —
+   and that scope is enforced at observation time (see *Background operation*).
 4. **Colors** — one screenshot classifies label-less rows (API 30+; light
    theme calibrated).
 5. **Plan** — parses titles (`الحلقة X`, `EP 06`, `SxxEyy`, trailing ` - 12`),

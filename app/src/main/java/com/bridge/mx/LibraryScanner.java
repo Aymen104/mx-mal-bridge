@@ -106,6 +106,7 @@ public class LibraryScanner {
     public static int scan(Context ctx) {
         Map<String, String> bestName = new HashMap<>(); // norm key -> filename of highest ep
         Map<String, Integer> bestEp = new HashMap<>();
+        Set<String> allKeys = new HashSet<>(); // canonical key of EVERY Download episode file
         Cursor c = null;
         try {
             boolean modern = Build.VERSION.SDK_INT >= 29;
@@ -140,6 +141,10 @@ public class LibraryScanner {
                     bestEp.put(nk, p.ep);
                     bestName.put(nk, name);
                 }
+                // Every passing file is allowed, not just the highest of each
+                // series: MX may show any episode file, and each one lives in
+                // the Download tree, so each one must be admitted by the gate.
+                allKeys.add(Store.canon(name));
             }
         } catch (Throwable t) {
             Report.err("libscan", "MediaStore query failed", t);
@@ -173,6 +178,10 @@ public class LibraryScanner {
         }
         // Drop series whose files disappeared from the device.
         Store.sweepLib(keep);
+        // Publish the Download allowlist, then purge observed rows that have
+        // no place in it (SD card, other folders, or apps).
+        Store.setLibKeys(allKeys);
+        Store.sweepOutside();
         return added;
     }
 

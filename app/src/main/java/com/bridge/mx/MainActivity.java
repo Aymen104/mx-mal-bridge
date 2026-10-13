@@ -49,7 +49,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
     private Handler ui;
 
-    /** Small on-device model used as a grounded match fallback. */
+    /** Small on-device model — the priority title matcher when loaded. */
     private static final String MODEL_URL =
             "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/"
                     + "Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
@@ -86,8 +86,9 @@ public class MainActivity extends Activity implements Store.Listener {
         say("Flow: open MX list > Scan > Colors > Plan > Match > Apply.");
         say("Background: service auto-scans MX; network sync every "
                 + (MxService.PIPELINE_PERIOD_MS / 60000) + " min. Auto toggle = live writes.");
-        say("AI: grounded fallback, runs ONLY on unmatched titles. Tap AI to load a small"
-                + " on-device model (optional; app works without it).");
+        say("AI: when the on-device model is loaded it decides every title match"
+                + " (priority matcher); the deterministic scorer is the fallback. Tap AI to"
+                + " load it (optional; app works without it).");
         say("Errors: " + safeReportPath());
         Retention.init(this);
         refreshStatus();
@@ -416,7 +417,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private void doAi() {
         final LlmBrain brain = LlmBrain.get(this);
         if (brain.ready()) {
-            say("AI: local model loaded and ready (grounded match fallback).");
+            say("AI: local model loaded and ready (priority matcher).");
             refreshStatus();
             return;
         }
@@ -432,8 +433,9 @@ public class MainActivity extends Activity implements Store.Listener {
         new AlertDialog.Builder(this)
                 .setTitle("Download local AI model?")
                 .setMessage("Qwen2.5-0.5B-Instruct (~521 MB) is downloaded to app storage "
-                        + "and used only as a grounded fallback when title matching is "
-                        + "ambiguous. Wi-Fi recommended. The app works without it.")
+                        + "and becomes the priority title matcher: it decides every match "
+                        + "(only ever among real MAL candidates — it can never invent an id). "
+                        + "Wi-Fi recommended. The app works without it.")
                 .setPositiveButton("Download", (d, w) -> downloadModel())
                 .setNegativeButton("Cancel", (d, w) -> say("AI: kept deterministic matcher."))
                 .show();

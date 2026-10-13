@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,6 +54,8 @@ public class Store {
 
     private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private static final Map<String, Row> rows = new LinkedHashMap<>();
+    /** Canonical keys of every episode video under Download (the allowlist). */
+    private static final Set<String> libKeys = new HashSet<>();
     private static SharedPreferences prefs;
 
     /**
@@ -132,8 +135,35 @@ public class Store {
         }
     }
 
+    /** Replace the Download allowlist (canonical keys of every episode file). */
+    public static synchronized void setLibKeys(Set<String> keys) {
+        libKeys.clear();
+        if (keys != null) libKeys.addAll(keys);
+        if (prefs == null) return;
+        try {
+            JSONArray arr = new JSONArray();
+            for (String k : libKeys) arr.put(k);
+            prefs.edit().putString("libkeys", arr.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Drop observed (non-library) rows that have no place in the Download tree. */
+    public static synchronized void sweepOutside() {
+        Iterator<Map.Entry<String, Row>> it = rows.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Row> e = it.next();
+            if (!e.getValue().fromLib && ScopeGate.outside(libKeys, e.getKey())) it.remove();
+        }
+    }
+
     /** Insert or refresh a row observed from the live MX list. */
     public static synchronized void upsert(Row r) {
+        // Download-only scope: accessibility observations expose only a display
+        // title (no path), so an observed row must prove itself against the
+        // Download library allowlist before it enters the store. Library rows
+        // always pass — the scanner itself only ever walks the Download tree.
+        if (!r.fromLib && ScopeGate.outside(libKeys, r.key)) return;
         Row old = rows.get(r.key);
         if (old != null) {
             r.applied = old.applied;
@@ -242,6 +272,13 @@ public class Store {
                 rows.put(r.key, r);
             }
             dedupe();
+            // Restore the Download allowlist so the observation gate works
+            // before the first scan of this process.
+            String lk = prefs.getString("libkeys", "");
+            if (!lk.isEmpty()) {
+                JSONArray lkArr = new JSONArray(lk);
+                for (int i = 0; i < lkArr.length(); i++) libKeys.add(lkArr.getString(i));
+            }
         } catch (Exception ignored) {
         }
     }

@@ -121,9 +121,27 @@ public class MxService extends AccessibilityService {
         configureServiceInfo(); // interaction with other apps = code only
         Report.info("service", "accessibility service connected");
         updateNotification(null);
+        // Populate the Download allowlist early so the observation gate has
+        // data before the first MX event (the ~24 min tick re-arms it later).
+        kickLibScan();
         // first background sync shortly after connect, then every ~20 min
         armNext(8_000);
         Log.i(TAG, "service connected");
+    }
+
+    /** Prime the Download allowlist right after connect (non-blocking). */
+    private void kickLibScan() {
+        pipeline.execute(() -> {
+            try {
+                if (LibraryScanner.canRead(this)) {
+                    LibraryScanner.scan(this);
+                    Store.save();
+                    Store.notifyChanged();
+                }
+            } catch (Throwable t) {
+                Report.err("service", "initial library scan failed", t);
+            }
+        });
     }
 
     /**
