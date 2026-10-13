@@ -57,6 +57,17 @@ public final class Watched {
      * @return true when this raised the stored maximum (or created the entry)
      */
     public static synchronized boolean record(String parsedTitle, int ep, int percent) {
+        return record(parsedTitle, ep, percent, "obs");
+    }
+
+    /**
+     * Record an observation, tagging its source and writing a line to the
+     * {@link WatchLog} when the value crosses a 5% bucket (or first reaches
+     * completion), so progress is auditable without flooding the log.
+     *
+     * @param src short source tag, e.g. "a11y" (player screen) or "media" (MediaSession)
+     */
+    public static synchronized boolean record(String parsedTitle, int ep, int percent, String src) {
         if (percent < 0) return false;
         if (parsedTitle == null || parsedTitle.isEmpty()) return false;
         if (ep < 0) ep = 0;
@@ -65,6 +76,11 @@ public final class Watched {
         if (old != null && percent <= old) return false;
         pct.put(k, percent);
         save();
+        boolean finishEdge = percent >= PlaybackTracker.FINISH_PCT
+                && (old == null || old < PlaybackTracker.FINISH_PCT);
+        if (old == null || percent / 5 != old / 5 || finishEdge) {
+            WatchLog.watch(parsedTitle, ep, percent, src);
+        }
         return true;
     }
 

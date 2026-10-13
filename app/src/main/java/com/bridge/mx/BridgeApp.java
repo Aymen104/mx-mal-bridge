@@ -13,6 +13,7 @@ public class BridgeApp extends Application {
     public void onCreate() {
         super.onCreate();
         Report.init(this);
+        WatchLog.init(this);
         Report.info("session", "app start, sdk=" + Build.VERSION.SDK_INT
                 + " device=" + Build.MANUFACTURER + " " + Build.MODEL);
 

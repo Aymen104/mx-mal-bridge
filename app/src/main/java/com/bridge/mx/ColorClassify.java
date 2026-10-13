@@ -1,35 +1,46 @@
 package com.bridge.mx;
 
 /**
- * Maps a sampled MX Player row colour to a tag verdict.
+ * Maps a sampled MX Player row colour to a watch-state verdict.
  *
- * <p>Pure (no Android types) so the three calibrated centroids and the
- * neutral-grey guard are fully unit-testable, exactly like the rest of the
- * bridge's decision logic.
+ * <p>Pure (no Android types) so the three calibrated centroids are fully
+ * unit-testable, exactly like the rest of the bridge's decision logic.
  *
- * <p>The centroids are <em>tinted</em> (blue = "last played", warm tan =
- * "finished", warm brown = "no label"). A plain neutral grey is not one of
- * MX's tags. It used to be read as "finished" anyway, because a mid-grey
- * (0x888888) sits nearer the warm finished centroid (167,149,132) than the
- * "normal" one (123,105,101) — 33.9 vs 48.5, inside the 45 limit. That single
- * mistake marked 52 label-less rows as watched and pushed 31 of them to MAL.
- * {@link #isNeutral} rejects that whole class before any distance is taken.
+ * <p>MX encodes the row's watch state in the filename's ink colour (light
+ * theme). Re-measured on MX <b>3.3.1</b> (2026-10-13) with a controlled
+ * "Mark as" round-trip on a single file, then confirmed against the live list:
+ *
+ * <pre>
+ *   NEW / None   -&gt; dark indigo (53,52,76)   no tag
+ *   Last played  -&gt; blue        (19,89,216) in progress
+ *   Finished     -&gt; grey        (136,136,136) watched to the end
+ * </pre>
+ *
+ * <p>The grey "finished" ink is the important one: MX shows a finished row with
+ * NO text of its own (it hides both the NEW badge and the "Played" line), so
+ * the colour is the only signal that credits episode N instead of N-1.
+ *
+ * <p>History: the earlier calibration was taken on MX 3.3.0, whose palette was
+ * tinted and whose neutral grey was treated as "no tag". The 3.3.1 update
+ * changed the palette to blue/grey/dark-indigo; the old rule then suppressed
+ * every finished row (and the old "grey" was neutral-grey 0x888888, which is
+ * now the <em>finished</em> ink). This class reflects the live values,
+ * confirmed against the user's own watched ledger (grey rows = real watches).
  */
 public final class ColorClassify {
 
-    /** Calibrated centroids (light theme, background ~241,241,241). */
-    static final int[] C_PLAYED = {103, 125, 179};   // blue  -> last played
-    static final int[] C_FINISHED = {167, 149, 132}; // warm  -> watched tag
-    static final int[] C_NORMAL = {123, 105, 101};   // brown -> no label
-    static final int MAX_DIST = 45;
+    /** Calibrated centroids (MX 3.3.1, light theme, background ~248). */
+    static final int[] C_PLAYED = {19, 89, 216};     // blue        -> last played / in progress
+    static final int[] C_FINISHED = {136, 136, 136}; // grey        -> finished / watched to the end
+    static final int[] C_NORMAL = {53, 52, 76};      // dark indigo -> no label / unwatched
 
     /**
-     * Largest per-channel spread still counted as neutral grey. Every real
-     * centroid spreads its channels by 22 (normal), 35 (finished) or 76
-     * (played), so 14 leaves clear headroom while collapsing 0x888888 and
-     * friends to zero.
+     * Distance limit. The three centroids are ~132-149 apart, so 60 leaves a
+     * comfortable margin around each while keeping a clear "unknown" gap: a
+     * colour roughly halfway between grey and dark indigo is ~66 from both and
+     * abstains rather than guessing.
      */
-    static final int NEUTRAL_SPREAD = 14;
+    static final double MAX_DIST = 60;
 
     private ColorClassify() {
     }
@@ -39,11 +50,10 @@ public final class ColorClassify {
      *         far from every centroid to judge at all.
      */
     public static String classify(int r, int g, int b) {
-        if (isNeutral(r, g, b)) return "none"; // a plain grey is no tag, never "finished"
         int dp = dist2(r, g, b, C_PLAYED);
         int df = dist2(r, g, b, C_FINISHED);
         int dn = dist2(r, g, b, C_NORMAL);
-        int limit = MAX_DIST * MAX_DIST;
+        double limit = MAX_DIST * MAX_DIST;
         int min = Math.min(dp, Math.min(df, dn));
         if (min > limit) return null;
         if (min == dp) return "watching";
@@ -51,16 +61,19 @@ public final class ColorClassify {
         return "none";
     }
 
-    /** True when the channels are close enough to grey to carry no tag ink. */
-    static boolean isNeutral(int r, int g, int b) {
-        int spread = Math.max(Math.abs(r - g), Math.max(Math.abs(g - b), Math.abs(r - b)));
-        return spread <= NEUTRAL_SPREAD;
+    /**
+     * True when the sampled colour carries a real MX tag: blue (last played) or
+     * grey (finished). The dark-indigo "none" ink is untagged, and an unknown
+     * colour is not a tag either.
+     */
+    public static boolean hasTag(int r, int g, int b) {
+        String v = classify(r, g, b);
+        return "watching".equals(v) || "finished".equals(v);
     }
 
-    /** Packed-ARGB convenience (0xAARRGGBB): true when the pixel is grey. */
-    static boolean isNeutral(int rgb) {
-        int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
-        return isNeutral(r, g, b);
+    /** Packed-ARGB convenience ({@code 0x00RRGGBB} or {@code 0xAARRGGBB}). */
+    public static boolean hasTag(int rgb) {
+        return hasTag((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
     }
 
     static int dist2(int r, int g, int b, int[] c) {

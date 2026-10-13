@@ -2,21 +2,26 @@ package com.bridge.mx;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
+import android.media.session.MediaSessionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.Button;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -83,9 +88,13 @@ public class MainActivity extends Activity implements Store.Listener {
         }
 
         say("MX-MAL Bridge v1 - declared made with AI (see README).");
-        say("Flow: open MX list > Scan > Colors > Plan > Match > Apply.");
+        say("Flow: tap Sync for the whole pipeline (MX + library + plan + match"
+                + " + apply when Auto is on). Individual steps (Scan MX, Library,"
+                + " Colors, Plan) and extras live under More \u22ee.");
         say("Background: service auto-scans MX; network sync every "
                 + (MxService.PIPELINE_PERIOD_MS / 60000) + " min. Auto toggle = live writes.");
+        say("Watch progress: reads MX's MediaSession (More \u22ee > Watch: notification"
+                + " access, one-time). Real position/duration, no screen capture.");
         say("AI: when the on-device model is loaded it decides every title match"
                 + " (priority matcher); the deterministic scorer is the fallback. Tap AI to"
                 + " load it (optional; app works without it).");
@@ -110,6 +119,19 @@ public class MainActivity extends Activity implements Store.Listener {
         // QA hook: `--ez repair_dry true` plans the repair with NO writes.
         if (getIntent() != null && getIntent().getBooleanExtra("repair_dry", false)) {
             getWindow().getDecorView().postDelayed(this::doRepairDry, 1200);
+        }
+        // QA hook: `--ez bootcamp true` runs the drill — lessons + the exam,
+        // repeated until a perfect paper (cap 25, or `--ei tries N`).
+        if (getIntent() != null && getIntent().getBooleanExtra("bootcamp", false)) {
+            getWindow().getDecorView().postDelayed(this::doDrill, 1200);
+        }
+        // QA hook: `--ez sync true` runs the one-tap Sync pipeline on launch.
+        if (getIntent() != null && getIntent().getBooleanExtra("sync", false)) {
+            getWindow().getDecorView().postDelayed(this::doSync, 1500);
+        }
+        // QA hook: `--ez watch_access true` opens the notification-access screen.
+        if (getIntent() != null && getIntent().getBooleanExtra("watch_access", false)) {
+            getWindow().getDecorView().postDelayed(this::doWatchAccess, 900);
         }
         // QA hook: `--es at_base http://<host>:<port>` points the crawl at a
         // local mirror of the listing (saved bodies) instead of the live site.
@@ -136,29 +158,21 @@ public class MainActivity extends Activity implements Store.Listener {
         root.addView(status, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // horizontal button strip
-        HorizontalScrollView hs = new HorizontalScrollView(this);
-        hs.setHorizontalScrollBarEnabled(false);
+        // Compact button strip: six weighted buttons share the row so nothing
+        // has to be scrolled sideways. Sync = one tap for the whole pipeline.
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
-        strip.addView(btn("Login", v -> doLogin()));
-        strip.addView(btn("Scan", v -> doScan()));
-        strip.addView(btn("Lib", v -> doLibScan()));
-        strip.addView(btn("Colors", v -> doColors()));
-        strip.addView(btn("Match", v -> doMatch()));
-        strip.addView(btn("Plan", v -> doPlan()));
-        strip.addView(btn("Apply", v -> doApply()));
-        btnAuto = btn("Auto: off", v -> doAuto());
-        strip.addView(btnAuto);
-        strip.addView(btn("AI", v -> doAi()));
-        strip.addView(btn("Exam", v -> doExam()));
-        strip.addView(btn("Test", v -> doTest()));
-        strip.addView(btn("Titles", v -> doTitles()));
-        strip.addView(btn("Repair", v -> doRepair()));
-        strip.addView(btn("Wipe", v -> doWipe()));
-        hs.addView(strip, lp(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(hs, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+        // One tap runs the whole safe pipeline (MX + library + plan + match,
+        // and apply when Auto is on); the individual steps stay under More.
+        addBtn(strip, "Sync", v -> doSync());
+        addBtn(strip, "Match", v -> doMatch());
+        addBtn(strip, "Apply", v -> doApply());
+        btnAuto = btn("Auto", v -> doAuto());
+        strip.addView(btnAuto, weight());
+        addBtn(strip, "AI", v -> doAi());
+        // …every other feature lives in the "More" menu (nothing removed).
+        addBtn(strip, "More \u22ee", this::showMoreMenu);
+        root.addView(strip, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // observed episodes
@@ -196,12 +210,68 @@ public class MainActivity extends Activity implements Store.Listener {
         b.setText(text);
         b.setTextSize(12);
         b.setAllCaps(false);
+        b.setSingleLine(true);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        int px = (int) (6 * getResources().getDisplayMetrics().density);
+        b.setPadding(px, b.getPaddingTop(), px, b.getPaddingBottom());
         b.setOnClickListener(onClick);
         return b;
     }
 
+    /**
+     * The overflow menu: every feature that is not part of the one-tap core
+     * workflow (Scan / Match / Apply / Auto / AI). Keeping them here shrinks the
+     * toolbar without removing anything.
+     */
+    private void showMoreMenu(View anchor) {
+        PopupMenu m = new PopupMenu(this, anchor);
+        m.getMenu().add(0, 1, 0, "Login to MAL");
+        m.getMenu().add(0, 2, 1, "Scan MX only");
+        m.getMenu().add(0, 3, 2, "Library scan");
+        m.getMenu().add(0, 4, 3, "Colors (classify)");
+        m.getMenu().add(0, 5, 4, "Plan");
+        m.getMenu().add(0, 6, 5, "Exam");
+        m.getMenu().add(0, 7, 6, "Drill (lessons)");
+        m.getMenu().add(0, 8, 7, "Self-test");
+        m.getMenu().add(0, 9, 8, "Titles (update)");
+        m.getMenu().add(0, 10, 9, "Repair");
+        m.getMenu().add(0, 11, 10, "Wipe");
+        m.getMenu().add(0, 12, 11, "Watch: notification access");
+        m.getMenu().add(0, 13, 12, "Watch log (audit)");
+        m.setOnMenuItemClickListener((MenuItem item) -> {
+            switch (item.getItemId()) {
+                case 1: doLogin(); return true;
+                case 2: doScan(); return true;
+                case 3: doLibScan(); return true;
+                case 4: doColors(); return true;
+                case 5: doPlan(); return true;
+                case 6: doExam(); return true;
+                case 7: doDrill(); return true;
+                case 8: doTest(); return true;
+                case 9: doTitles(); return true;
+                case 10: doRepair(); return true;
+                case 11: doWipe(); return true;
+                case 12: doWatchAccess(); return true;
+                case 13: doWatchLog(); return true;
+                default: return false;
+            }
+        });
+        m.show();
+    }
+
     private LinearLayout.LayoutParams lp(int w, int h) {
         return new LinearLayout.LayoutParams(w, h);
+    }
+
+    /** Equal-weight slot so every button in the strip shares the row. */
+    private LinearLayout.LayoutParams weight() {
+        return new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    }
+
+    private void addBtn(LinearLayout row, String text, View.OnClickListener onClick) {
+        row.addView(btn(text, onClick), weight());
     }
 
     // ------------------------------------------------------------ lifecycle
@@ -305,6 +375,61 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     /**
+     * The drill: lessons + the exam, repeated until a perfect paper (or the
+     * retry cap). Each miss becomes a lesson, so — like a student drilling a
+     * paper — the app is pushed to 100%. No points are paid for a drill
+     * (practice); the single-shot {@code Exam} button is the one that pays.
+     */
+    private void doDrill() {
+        LlmBrain brain = LlmBrain.get(this);
+        final int tries = drillTries();
+        final boolean hasModel = LlmBrain.hasModel(this);
+        say("Drill: study + exam until perfect (" + tries + " max, "
+                + (brain.ready() ? "with AI"
+                   : hasModel ? "loading AI model..." : "deterministic") + ")...");
+        new Thread(() -> {
+            final Bootcamp.Outcome o =
+                    Bootcamp.drill(MainActivity.this, brain, tries);
+            final boolean escalated = !o.perfect() && !Repair.reportedRecently(MainActivity.this);
+            if (escalated && o.finalReport != null) {
+                Repair.reportExam(MainActivity.this,
+                        "drill not perfect after " + o.tries() + " tries", o.finalReport);
+            }
+            ui.post(() -> {
+                StringBuilder sb = new StringBuilder();
+                for (Bootcamp.Attempt a : o.attempts) {
+                    sb.append(a.line()).append("\n");
+                }
+                sb.append("\n").append(o.line()).append("\n");
+                sb.append(o.lessonsLearned).append(" lesson(s) learned from mistakes.\n");
+                sb.append("Practice drill \u2014 no points paid (use Exam to bank).");
+                if (escalated) {
+                    sb.append("\n\nRepair incident written:\n")
+                            .append(Repair.dir(MainActivity.this)).append("/LATEST.md");
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Drill \u2014 " + (o.perfect() ? "PERFECT" : "incomplete"))
+                        .setMessage(sb.toString())
+                        .setPositiveButton("OK", null)
+                        .show();
+                Report.info("drill", o.line() + " | attempts=" + o.tries()
+                        + " lessons=" + o.lessonsLearned
+                        + " brain=" + (o.finalReport != null && o.finalReport.brainUsed));
+                say(o.line());
+                refreshStatus();
+            });
+        }, "mx-drill").start();
+    }
+
+    /** Drill attempts: {@code --ei tries N}, else the default (25). */
+    private int drillTries() {
+        int t = getIntent() == null
+                ? Bootcamp.DEFAULT_TRIES
+                : getIntent().getIntExtra("tries", Bootcamp.DEFAULT_TRIES);
+        return t < 1 ? Bootcamp.DEFAULT_TRIES : t;
+    }
+
+    /**
      * Refresh the anime-title knowledge base from animeTosho (the ~2-3 month
      * cadence, or on demand), then study the new titles immediately so the
      * matcher learns any shorthands they unlock.
@@ -360,9 +485,9 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     /**
-     * Automatic MAL repair: withdraws bogus writes (untagged grey rows that
-     * got pushed as watched) back to plan_to_watch|0, keeping anything the
-     * user rated or has since moved on. See MalRepair for the exact rules.
+     * Automatic MAL repair: withdraws bogus writes (pushed rows whose MX ink
+     * carries NO real tag) back to plan_to_watch|0, keeping anything the user
+     * rated or has since moved on. See MalRepair for the exact rules.
      */
     private void doRepair() {
         say("Repairing bogus MAL writes...");
@@ -501,6 +626,54 @@ public class MainActivity extends Activity implements Store.Listener {
         });
     }
 
+    /**
+     * Open the system Notification-access screen so the user can enable
+     * {@link MediaWatchService}; that is what lets the bridge read MX Player's
+     * MediaSession for real watch progress.
+     */
+    private void doWatchAccess() {
+        boolean on = isWatchAccessEnabled();
+        say("Watch progress reads MX's MediaSession (no screen capture)."
+                + " Notification access is " + (on ? "ON." : "OFF - enable it below."));
+        try {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (Throwable t) {
+            Report.err("watch", "cannot open notification access", t);
+            say("Open Settings > Notifications > Notification access manually.");
+        }
+    }
+
+    /** True when this app's notification listener is enabled by the user. */
+    private boolean isWatchAccessEnabled() {
+        try {
+            MediaSessionManager mgr = (MediaSessionManager)
+                    getSystemService(Context.MEDIA_SESSION_SERVICE);
+            if (mgr == null) return false;
+            mgr.getActiveSessions(new ComponentName(this, MediaWatchService.class));
+            return true;
+        } catch (SecurityException e) {
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Show the tail of the {@link WatchLog}: every watch observation, match and
+     * MyAnimeList write, so the whole tracking flow is auditable on-device.
+     */
+    private void doWatchLog() {
+        final String path = WatchLog.path();
+        exec.execute(() -> {
+            String tail = WatchLog.tail(200);
+            ui.post(() -> new AlertDialog.Builder(this)
+                    .setTitle("Watch log")
+                    .setMessage(tail + "\n" + path)
+                    .setPositiveButton("OK", null)
+                    .show());
+        });
+    }
+
     private void doLogin() {
         if (MalClient.hasSession(this)) {
             say("Already logged in (Clear app data to sign out).");
@@ -530,12 +703,20 @@ public class MainActivity extends Activity implements Store.Listener {
         MxService s = MxService.get();
         if (s == null) {
             say("Service not running: Settings > Accessibility > MX-MAL Bridge > On,"
-                    + " then open the MX list and tap Scan again.");
+                    + " then open MX Player and tap Scan again.");
             refreshStatus();
             return;
         }
-        s.collect("manual");
-        say("Scan: " + Store.all().size() + " rows read from MX (read-only).");
+        int found = s.collect("manual");
+        if (found > 0) {
+            say("Scan: " + found + " MX row(s) read (stored: "
+                    + Store.all().size() + ", read-only).");
+        } else {
+            say("Scan: no MX window reachable — MX only exposes the rows currently"
+                    + " on screen, so open MX Player first then tap Scan"
+                    + " (stored: " + Store.all().size() + ").");
+        }
+        refreshStatus();
     }
 
     private void doLibScan() {
@@ -574,19 +755,125 @@ public class MainActivity extends Activity implements Store.Listener {
         s.requestClassify();
     }
 
-    private void doMatch() {
-        if (!MalClient.hasSession(this)) {
-            say("Match: log in to MAL first.");
+    /**
+     * One tap, many functions: read MX Player's list, scan the whole device
+     * video library, rebuild the plan and match every new title on MAL — and,
+     * when Auto is on, push the changes. With Auto off it stops after matching
+     * (dry-run). Every individual step is still available under More.
+     */
+    private void doSync() {
+        MxService s = MxService.get();
+        // collect() touches accessibility nodes: it must run on the main thread.
+        final int mxRows = s == null ? 0 : s.collect("sync");
+        if (!LibraryScanner.canRead(this)) {
+            say("Sync: MX " + mxRows + " row(s); library scan needs video access.");
+            requestMediaPermission();
+            refreshStatus();
             return;
         }
-        Planner.rebuild();
-        final List<Store.Row> targets = new ArrayList<>();
+        final boolean loggedIn = MalClient.hasSession(this);
+        final boolean auto = Store.autoApply();
+        say("Sync: MX " + mxRows + " row(s) + library scan, then plan/match"
+                + (auto ? "/apply..." : " (dry-run)..."));
+        exec.execute(() -> {
+            int lib = LibraryScanner.scan(this);
+            Planner.rebuild();
+            int ok = 0, miss = 0;
+            if (loggedIn) {
+                List<Store.Row> targets = matchTargets();
+                if (!targets.isEmpty()) {
+                    int[] r = matchAll(targets);
+                    ok = r[0];
+                    miss = r[1];
+                }
+            }
+            Planner.rebuild();
+            Store.save();
+            AliasStore.persist(this);
+            onChanged();
+            final int fok = ok, fmiss = miss, flib = lib;
+            ui.post(() -> {
+                WatchLog.event("sync", "library " + flib + " series, matched " + fok
+                        + ", missed " + fmiss + ", rows " + Store.all().size()
+                        + (auto ? " (apply)" : " (dry-run)"));
+                say("Sync: library " + flib + " series, matched " + fok
+                        + (fmiss > 0 ? " (" + fmiss + " missed)" : "")
+                        + ". Stored rows: " + Store.all().size() + ".");
+                if (!loggedIn) {
+                    say("Sync: not logged in to MAL — matched nothing. Use More > Login.");
+                } else if (auto) {
+                    List<Store.Row> q = pendingQueue();
+                    if (q.isEmpty()) say("Sync: nothing to push (already up to date).");
+                    else runApply(q);
+                } else {
+                    say("Sync: dry-run — tap Apply to review and push.");
+                }
+            });
+        });
+    }
+
+    /** Rows worth searching on MAL: parsed, un-matched, and not unknown/none. */
+    private List<Store.Row> matchTargets() {
+        List<Store.Row> targets = new ArrayList<>();
         for (Store.Row r : Store.all()) {
             if (r.matchId < 0 && !r.parsedTitle.isEmpty()
                     && !("unknown".equals(r.state) || "none".equals(r.state))) {
                 targets.add(r);
             }
         }
+        return targets;
+    }
+
+    /**
+     * Search + match every target on the calling thread.
+     *
+     * @return {@code {ok, missed}} counts
+     */
+    private int[] matchAll(List<Store.Row> targets) {
+        int ok = 0, miss = 0;
+        for (final Store.Row r : targets) {
+            try {
+                String query = Aliases.apply(r.parsedTitle);
+                JSONArray data = MalClient.search(this, query);
+                int results = data == null ? 0 : data.length();
+                Matcher.Result b = Matcher.bestWithBrain(data, query, r.ep,
+                        LlmBrain.get(this));
+                r.matchTried = r.parsedTitle;
+                if (b != null) {
+                    r.matchId = b.id;
+                    r.matchTitle = b.title;
+                    r.numEp = b.numEp;
+                    Aliases.learn(r.parsedTitle, b.title);
+                    ok++;
+                    WatchLog.match(r.parsedTitle, MalClient.cleanQuery(query), b.title, b.id, results);
+                    say("match: '" + r.parsedTitle + "' -> " + b.title + " (" + b.id
+                            + (b.numEp > 0 ? ", " + b.numEp + " eps" : "") + ")");
+                } else {
+                    miss++;
+                    WatchLog.miss(r.parsedTitle, MalClient.cleanQuery(query), results, r.ep);
+                    say("no match: " + r.parsedTitle);
+                }
+            } catch (Exception e) {
+                miss++;
+                Report.err("match", "search failed for '" + r.parsedTitle + "'", e);
+                WatchLog.searchError(r.parsedTitle, e.getMessage());
+                say("search error: " + e.getMessage());
+            }
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException ignored) {
+            }
+        }
+        return new int[]{ok, miss};
+    }
+
+    private void doMatch() {
+        if (!MalClient.hasSession(this)) {
+            say("Match: log in to MAL first.");
+            return;
+        }
+        Planner.rebuild();
+        final List<Store.Row> targets = matchTargets();
         if (targets.isEmpty()) {
             say("Match: nothing to match (run Scan then Plan first).");
             onChanged();
@@ -594,42 +881,25 @@ public class MainActivity extends Activity implements Store.Listener {
         }
         say("Match: searching " + targets.size() + " titles...");
         exec.execute(() -> {
-            int ok = 0, miss = 0;
-            for (final Store.Row r : targets) {
-                try {
-                    String query = Aliases.apply(r.parsedTitle);
-                    JSONArray data = MalClient.search(MainActivity.this, query);
-                    Matcher.Result b = Matcher.bestWithBrain(data, query, r.ep,
-                            LlmBrain.get(MainActivity.this));
-                    r.matchTried = r.parsedTitle;
-                    if (b != null) {
-                        r.matchId = b.id;
-                        r.matchTitle = b.title;
-                        r.numEp = b.numEp;
-                        Aliases.learn(r.parsedTitle, b.title);
-                        ok++;
-                        say("match: '" + r.parsedTitle + "' -> " + b.title + " (" + b.id
-                                + (b.numEp > 0 ? ", " + b.numEp + " eps" : "") + ")");
-                    } else {
-                        miss++;
-                        say("no match: " + r.parsedTitle);
-                    }
-                } catch (Exception e) {
-                    miss++;
-                    Report.err("match", "search failed for '" + r.parsedTitle + "'", e);
-                    say("search error: " + e.getMessage());
-                }
-                try {
-                    Thread.sleep(400);
-                } catch (InterruptedException ignored) {
-                }
-            }
+            int[] r = matchAll(targets);
             Planner.rebuild(); // plans can now use num_episodes
             Store.save();
-            AliasStore.persist(MainActivity.this);
+            AliasStore.persist(this);
             onChanged();
-            say("Match done: " + ok + " ok, " + miss + " missed.");
+            say("Match done: " + r[0] + " ok, " + r[1] + " missed.");
         });
+    }
+
+    /** Rows whose plan can be applied now (matched, and not a bogus completion). */
+    private List<Store.Row> pendingQueue() {
+        List<Store.Row> q = new ArrayList<>();
+        for (Store.Row r : Store.all()) {
+            if (r.planStatus.isEmpty()) continue;
+            boolean safe = r.matchId > 0
+                    && !("completed".equals(r.planStatus) && r.planEps < 0);
+            if (safe) q.add(r);
+        }
+        return q;
     }
 
     private void doPlan() {
@@ -652,14 +922,13 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     private void doApply() {
-        final List<Store.Row> q = new ArrayList<>();
+        final List<Store.Row> q = pendingQueue();
         int unmatched = 0;
         for (Store.Row r : Store.all()) {
             if (r.planStatus.isEmpty()) continue;
             boolean safe = r.matchId > 0
                     && !("completed".equals(r.planStatus) && r.planEps < 0);
-            if (safe) q.add(r);
-            else unmatched++;
+            if (!safe) unmatched++;
         }
         if (q.isEmpty()) {
             say("Apply: nothing ready. Run Scan > Plan > Match first.");
@@ -697,6 +966,7 @@ public class MainActivity extends Activity implements Store.Listener {
                         r.planStatus, r.planEps)) {
                     r.applied = sig; // remember it; never retry this downgrade
                     held++;
+                    WatchLog.hold(r.matchId, r.planStatus, r.planEps);
                     Store.save();
                     say("\u21ba " + shortName(r.title) + ": kept MAL value (would downgrade)");
                     continue;
@@ -706,11 +976,13 @@ public class MainActivity extends Activity implements Store.Listener {
                     r.applied = sig; // background won't re-push
                     Store.save();
                     ok++;
+                    WatchLog.push(r.matchId, r.planStatus, r.planEps, true, r.matchTitle);
                     say("\u2713 " + shortName(r.title) + " -> " + r.planStatus
                             + (r.planEps >= 0 ? " (" + r.planEps + " eps)" : ""));
                 } catch (Exception e) {
                     err++;
                     Report.err("apply", "update failed for '" + r.title + "'", e);
+                    WatchLog.push(r.matchId, r.planStatus, r.planEps, false, e.getMessage());
                     say("\u2717 " + shortName(r.title) + ": " + e.getMessage());
                 }
                 try {
@@ -752,7 +1024,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 + " | " + Catalogue.ageLine(this)
                 + " | " + Selftest.statusLine(this)
                 + sync);
-        btnAuto.setText(Store.autoApply() ? "Auto: ON" : "Auto: off");
+        btnAuto.setText(Store.autoApply() ? "Auto\u2713" : "Auto");
     }
 
     private String safeReportPath() {
@@ -853,6 +1125,10 @@ public class MainActivity extends Activity implements Store.Listener {
             StringBuilder meta = new StringBuilder(r.state);
             if (r.ep > 0) meta.append(" | ep ").append(r.ep);
             if (!r.duration.isEmpty()) meta.append(" | ").append(r.duration);
+            // The two observers, shown side by side: the sampler's percent and
+            // the list reader's "last played" date.
+            if (r.watchedPct >= 0) meta.append(" | ").append(r.watchedPct).append("%");
+            if (!r.playedAt.isEmpty()) meta.append(" | ").append(r.playedAt);
             if (r.matchId > 0) {
                 meta.append("\nMAL: ").append(r.matchTitle);
                 if (r.numEp > 0) meta.append(" (").append(r.numEp).append(" eps)");

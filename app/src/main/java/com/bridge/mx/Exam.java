@@ -150,6 +150,22 @@ public final class Exam {
         return new Report(out, used, System.currentTimeMillis() - t0);
     }
 
+    /**
+     * The title of the candidate with {@code id} in a question's pool, or null.
+     * Used by the {@link Bootcamp} to turn a miss into a lesson.
+     */
+    public static String titleOf(Q q, int id) {
+        for (int i = 0; i < q.pool.length(); i++) {
+            JSONObject o = q.pool.optJSONObject(i);
+            if (o == null) continue;
+            JSONObject n = o.optJSONObject("node");
+            if (n != null && n.optInt("id", -1) == id) {
+                return n.optString("title", null);
+            }
+        }
+        return null;
+    }
+
     // ------------------------------------------------------------------ bank
 
     private static JSONObject node(int id, String title, int eps, String media, String status,

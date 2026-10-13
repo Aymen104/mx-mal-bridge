@@ -18,6 +18,28 @@ import java.util.Map;
  *   new (NEW badge)       -> never opened                          -> 0 watched
  * </pre>
  *
+ * <p><b>Two independent observers, one per-episode truth.</b> The MX list
+ * reader and the playback sampler watch the same playback from two angles and
+ * are joined per {@code (norm(series), episode)}:
+ *
+ * <ul>
+ *   <li><b>list reader</b> ({@link MxService#readRow}) — qualitative and
+ *       persistent: a NEW badge (never opened), a "last played" date (opened at
+ *       least once, now kept as {@link Store.Row#playedAt}), or neither. It
+ *       survives app restarts and gaps in sampling.</li>
+ *   <li><b>player sampler</b> ({@link MxService#probePlayer} and the
+ *       MediaSession reader → {@link Watched}) — quantitative and live: the max
+ *       percent observed, i.e. how far the episode was played.</li>
+ * </ul>
+ *
+ * <p>The relation, resolved strongest-evidence-first: a grey "finished" tag or
+ * a ledger percent &ge; {@link PlaybackTracker#FINISH_PCT} makes the episode
+ * itself watched (N); a last-played date or any ledger percent &gt; 0 makes it
+ * "reached" (N-1); a file only on disk is "present" (N-1); a NEW badge with no
+ * play evidence is nothing (0). The list answers "was it touched?" when the
+ * sampler was silent, and the sampler answers "how far?" when the list is
+ * blank — neither alone is complete.
+ *
  * <p>The series progress is the MAXIMUM over its unique episodes: reaching
  * episode N (present/watching) means the user watched through N-1, so ep N
  * contributes N-1; a finished episode N contributes N. No "highest episode =
@@ -97,7 +119,7 @@ public class Planner {
                 }
                 if (ef > groupMaxEp) groupMaxEp = ef;
 
-                String state = r.state;
+                String state = fuseState(r.state, r.playedAt, r.watchedPct);
                 int contrib = episodeValue(state, ef);
                 if (contrib > series) series = contrib;
                 if ("finished".equals(state) || "watching".equals(state)
@@ -161,7 +183,8 @@ public class Planner {
             int finalEp = malTotal > 0 ? malTotal : groupMaxEp;
             if (finalEp > 0) {
                 for (Store.Row r : g) {
-                    if (r.ep == finalEp && "finished".equals(r.state)) {
+                    if (r.ep == finalEp
+                            && "finished".equals(fuseState(r.state, r.playedAt, r.watchedPct))) {
                         finalFinished = true;
                         break;
                     }
@@ -272,10 +295,41 @@ public class Planner {
         }
     }
 
-    private static int episodeValue(String state, int ep) {
+    /** Package-private so the scoring rule is unit-testable on the plain JVM. */
+    static int episodeValue(String state, int ep) {
         if ("finished".equals(state)) return ep;
         if ("watching".equals(state) || "present".equals(state)) return ep - 1;
         return 0;
+    }
+
+    /**
+     * Fuse the two independent observers of one episode into a single state,
+     * strongest evidence first. This is the relation between the MX list reader
+     * (badge / last-played date, persistent) and the playback sampler (ledger
+     * percent, live) — see the class doc.
+     *
+     * <pre>
+     *   grey "finished" tag (state)          -> finished
+     *   ledger percent &ge; 95               -> finished
+     *   last-played date OR ledger pct &gt; 0  -> watching   (reached)
+     *   file on disk only (present)          -> present
+     *   NEW badge, no play evidence          -> new
+     * </pre>
+     *
+     * @param state    list-reader state: new | watching | present | finished | unknown | none
+     * @param playedAt MX "last played" date text ("" when MX showed none)
+     * @param ledgerPct max percent observed by the sampler, or -1 when never sampled
+     * @return the resolved state, suitable for {@link #episodeValue(String, int)}
+     */
+    static String fuseState(String state, String playedAt, int ledgerPct) {
+        if ("finished".equals(state)) return "finished";
+        if (PlaybackTracker.isFinished(ledgerPct)) return "finished";
+        boolean played = ledgerPct > 0 || (playedAt != null && !playedAt.isEmpty());
+        if (played) return "watching";
+        if ("watching".equals(state)) return "watching";
+        if ("present".equals(state)) return "present";
+        if ("new".equals(state)) return "new";
+        return state;
     }
 
     /**

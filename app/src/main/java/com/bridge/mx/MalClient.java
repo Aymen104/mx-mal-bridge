@@ -24,7 +24,10 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -224,10 +227,33 @@ public class MalClient {
         return new JSONObject(resp);
     }
 
-    /** Top search results for a query (needs login). */
+    /**
+     * Top search results for a query (needs login).
+     *
+     * <p>Runs {@link #queryLadder}: the full cleaned title first, then shorter
+     * word prefixes when MAL returns nothing. Long subtitles and leftover
+     * release tags ("...OV ESub", "...The Dark Summoner is Trapped in a Room")
+     * otherwise defeat the search entirely.
+     */
     public static JSONArray search(Context c, String q) throws Exception {
-        String query = cleanQuery(q);
-        if (query.isEmpty()) return null;
+        JSONArray first = null;
+        for (String cand : queryLadder(q)) {
+            JSONArray data = rawSearch(c, cand);
+            if (data != null && data.length() > 0) return data;
+            if (first == null) first = data;
+            try {
+                Thread.sleep(350); // stay under MAL's ~3 requests/second
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return first;
+    }
+
+    /** One raw MAL anime search (no laddering). */
+    private static JSONArray rawSearch(Context c, String query) throws Exception {
+        if (query == null || query.isEmpty()) return null;
         // nsfw=true is required: without it MAL hides flagged titles from the
         // search index entirely (e.g. "Ayakashi Triangle" returns 0 results).
         String path = "anime?q=" + URLEncoder.encode(query, "UTF-8")
@@ -237,18 +263,49 @@ public class MalClient {
     }
 
     /**
+     * Cleaned query variants, longest first: the full title then 6/4/3-word
+     * prefixes. Deduplicated and never empty.
+     */
+    static List<String> queryLadder(String q) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        String base = cleanQuery(q);
+        if (base.isEmpty()) return new ArrayList<>(out);
+        out.add(base);
+        String[] w = base.split("\\s+");
+        for (int n : new int[]{6, 4, 3}) {
+            if (w.length > n) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < n; i++) {
+                    if (i > 0) sb.append(' ');
+                    sb.append(w[i]);
+                }
+                out.add(sb.toString());
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    /**
      * MAL rejects a "q" longer than 64 chars (HTTP 400 "invalid q"), and the
      * device filenames carry release-group / site / quality noise that makes
      * the search miss. Strip that noise and hard-cap the length.
      */
-    private static String cleanQuery(String q) {
+    static String cleanQuery(String q) {
         if (q == null) return "";
         String s = q;
+        // Arabic-script tails from Arabic release sites ("... مترجم عربي").
+        s = s.replaceAll("[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF"
+                + "\\uFB50-\\uFDFF\\uFE70-\\uFEFF]+", " ");
+        // season/episode markers that survived parsing ("S01E02", "1x02", "E02").
+        s = s.replaceAll("(?i)\\bS\\d{1,2}\\s?E\\d{1,3}\\b", " ");
+        s = s.replaceAll("(?i)\\b\\d{1,2}x\\d{1,3}\\b", " ");
+        s = s.replaceAll("(?i)\\bE\\d{1,3}\\b", " ");
         // release-tag noise (dotted or spaced)
-        s = s.replaceAll("(?i)\\b(uncensored|adn|jpn|msub\\w*|toonshub|subsplease|"
-                + "erai|judas|horriblesubs|web-?dl|blu-?ray|bd|amzn|cr|funimation|"
+        s = s.replaceAll("(?i)\\b(uncensored|adn|jpn|msub\\w*|esub|toonshub|subsplease|"
+                + "erai|judas|horriblesubs|hidive|baha|abema|iqiyi|muse|anione|aniplus|"
+                + "web-?dl|blu-?ray|bd|amzn|cr|funimation|"
                 + "aac[0-9.]*|ac3|eac3|x26[45]|h\\.?26[45]|hevc|avc|vp[89]|"
-                + "10bit|8bit|hdr|proper|repack|dual|audio|multi|subs?)\\b", " ");
+                + "10bit|8bit|hdr|proper|repack|dual|audio|multi|subs?|ov|ova)\\b", " ");
         // quality / state noise that is not part of a title
         s = s.replaceAll("(?i)\\b(end|sd|fhd|uhd|hd|source)\\b", " ");
         // site junk + arabic "translated online" tails
@@ -258,7 +315,12 @@ public class MalClient {
         // leftover separators / duplicate markers
         s = s.replaceAll("[()\\[\\]{}._★☆]", " ");
         s = s.replaceAll("\\s{2,}", " ").replaceAll("[\\s\\-–_.|!]+$", "").trim();
-        if (s.length() > 64) s = s.substring(0, 64).trim();
+        if (s.length() > 64) {          // MAL rejects q longer than 64 chars
+            s = s.substring(0, 64);
+            int sp = s.lastIndexOf(' ');   // cut on a word boundary, never mid-word
+            if (sp > 0) s = s.substring(0, sp);
+            s = s.trim();
+        }
         return s;
     }
 

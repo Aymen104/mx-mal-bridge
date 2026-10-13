@@ -12,10 +12,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MalRepair decision logic: which pushed rows are the artifact signature of
- * the old color-classifier bug (untagged grey, no playback evidence), and for
- * those, when is it safe to withdraw the MAL write (entry is still exactly
- * what we pushed, user never rated it).
+ * MalRepair decision logic: which pushed rows are the artifact signature (a
+ * push whose ink carries NO real MX tag, with no playback evidence), and for
+ * those, when is it safe to withdraw the MAL write (the entry is still exactly
+ * what we pushed and the user never rated it).
+ *
+ * <p>Recalibrated 2026-10-13 (MX 3.3.1): grey {@code 0x888888} is MX's real
+ * <em>finished</em> tag, so a pushed grey row is a genuine watch and is NEVER
+ * an artifact. Only the dark-indigo "no label" ink (None / NEW) is untagged.
  */
 public class MalRepairTest {
 
@@ -31,8 +35,11 @@ public class MalRepairTest {
         return r;
     }
 
-    private static final int GREY = 0xFF888888;
-    private static final int WARM = 0xFF8D4B00;
+    /** Real MX tags. */
+    private static final int GREY = 0xFF888888; // finished
+    private static final int BLUE = 0xFF1359D8; // last played (19,89,216)
+    /** The untagged ink MX paints for None / NEW (53,52,76). */
+    private static final int DARK = 0xFF35344C;
 
     // ---------------------------------------------------------------- decide
 
@@ -87,38 +94,39 @@ public class MalRepairTest {
     // ------------------------------------------------------------- isArtifact
 
     @Test
-    public void artifact_requires_pushed_grey_row() {
+    public void artifact_requires_pushed_untagged_row() {
         Map<String, Integer> empty = new HashMap<>();
-        assertFalse(MalRepair.isArtifact(row(1, "", GREY, -1, "Dream", "Dream"), empty));
-        assertFalse(MalRepair.isArtifact(row(1, "watching|2", WARM, -1, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "", DARK, -1, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "watching|2", GREY, -1, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "watching|2", BLUE, -1, "Dream", "Dream"), empty));
         assertFalse(MalRepair.isArtifact(row(1, "watching|2", -1, -1, "Dream", "Dream"), empty));
-        assertTrue(MalRepair.isArtifact(row(1, "watching|2", GREY, -1, "Dream", "Dream"), empty));
+        assertTrue(MalRepair.isArtifact(row(1, "watching|2", DARK, -1, "Dream", "Dream"), empty));
     }
 
     @Test
     public void artifact_rejected_by_playback_evidence() {
         Map<String, Integer> empty = new HashMap<>();
-        assertFalse(MalRepair.isArtifact(row(1, "watching|2", GREY, 100, "Dream", "Dream"), empty));
-        assertFalse(MalRepair.isArtifact(row(1, "watching|2", GREY, 60, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "watching|2", DARK, 100, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "watching|2", DARK, 60, "Dream", "Dream"), empty));
     }
 
     @Test
     public void artifact_rejected_by_watched_ledger() {
         Map<String, Integer> ledger = new HashMap<>();
         ledger.put(Watched.norm("Dream") + "|2", 100);
-        assertFalse(MalRepair.isArtifact(row(1, "watching|2", GREY, -1, "Dream", "Dream"), ledger));
+        assertFalse(MalRepair.isArtifact(row(1, "watching|2", DARK, -1, "Dream", "Dream"), ledger));
     }
 
     @Test
     public void artifact_ignores_withdrawn_rows() {
         Map<String, Integer> empty = new HashMap<>();
-        assertFalse(MalRepair.isArtifact(row(1, "plan_to_watch|0", GREY, -1, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(1, "plan_to_watch|0", DARK, -1, "Dream", "Dream"), empty));
     }
 
     @Test
     public void artifact_requires_a_real_match() {
         Map<String, Integer> empty = new HashMap<>();
-        assertFalse(MalRepair.isArtifact(row(0, "watching|2", GREY, -1, "Dream", "Dream"), empty));
+        assertFalse(MalRepair.isArtifact(row(0, "watching|2", DARK, -1, "Dream", "Dream"), empty));
     }
 
     // -------------------------------------------------------------- candidates
@@ -127,11 +135,11 @@ public class MalRepairTest {
     public void candidates_only_aggregate_artifact_series() {
         Map<String, Integer> empty = new HashMap<>();
         List<Store.Row> rows = new ArrayList<>();
-        rows.add(row(10, "watching|2", GREY, -1, "Ghost", "Ghost"));       // artifact
-        rows.add(row(10, "watching|1", GREY, -1, "Ghost", "Ghost"));       // same series
-        rows.add(row(11, "completed|12", GREY, -1, "Bogus", "Bogus"));     // artifact
-        rows.add(row(12, "watched|2", GREY, 100, "Real", "Real"));         // played -> no
-        rows.add(row(13, "watched|2", WARM, -1, "Tagged", "Tagged"));      // real tag -> no
+        rows.add(row(10, "watching|2", DARK, -1, "Ghost", "Ghost"));       // artifact
+        rows.add(row(10, "watching|1", DARK, -1, "Ghost", "Ghost"));       // same series
+        rows.add(row(11, "completed|12", DARK, -1, "Bogus", "Bogus"));     // artifact
+        rows.add(row(12, "watched|2", DARK, 100, "Real", "Real"));         // played -> no
+        rows.add(row(13, "watched|2", GREY, -1, "Tagged", "Tagged"));      // real tag -> no
         List<Integer> ids = MalRepair.candidates(rows, empty);
         assertEquals(2, ids.size());
         assertTrue(ids.contains(10));
@@ -142,13 +150,13 @@ public class MalRepairTest {
 
     @Test
     public void candidates_keep_series_with_sibling_playback_evidence() {
-        // Regression: a grey artifact row pushed "watching|2" while a SIBLING
-        // row of the same series genuinely played -> the series is real and
-        // must never be withdrawn (this is the #Zombie Sagashitemasu case).
+        // Regression: an untagged artifact row pushed "watching|2" while a
+        // SIBLING row of the same series genuinely played -> the series is real
+        // and must never be withdrawn (this is the #Zombie Sagashitemasu case).
         Map<String, Integer> empty = new HashMap<>();
         List<Store.Row> rows = new ArrayList<>();
-        rows.add(row(20, "watching|2", GREY, -1, "Zombie", "#Zombie Sagashitemasu")); // artifact push
-        rows.add(row(20, "watching|2", WARM, 100, "Zombie", "#Zombie Sagashitemasu")); // real playback
+        rows.add(row(20, "watching|2", DARK, -1, "Zombie", "#Zombie Sagashitemasu")); // artifact push
+        rows.add(row(20, "watching|2", DARK, 100, "Zombie", "#Zombie Sagashitemasu")); // real playback
         List<Integer> ids = MalRepair.candidates(rows, empty);
         assertTrue("sibling evidence must keep the series", ids.isEmpty());
     }
@@ -158,8 +166,8 @@ public class MalRepairTest {
         Map<String, Integer> ledger = new HashMap<>();
         ledger.put(Watched.norm("Marronnier Oukoku no Shichinin no Kishi") + "|2", 97);
         List<Store.Row> rows = new ArrayList<>();
-        rows.add(row(21, "watching|2", GREY, -1, "Marronnier", "Marronnier Oukoku no Shichinin no Kishi"));
-        rows.add(row(21, "watching|2", GREY, -1, "Marronnier 2", "Marronnier Oukoku no Shichinin no Kishi"));
+        rows.add(row(21, "watching|2", DARK, -1, "Marronnier", "Marronnier Oukoku no Shichinin no Kishi"));
+        rows.add(row(21, "watching|2", DARK, -1, "Marronnier 2", "Marronnier Oukoku no Shichinin no Kishi"));
         assertTrue(MalRepair.candidates(rows, ledger).isEmpty());
     }
 
@@ -167,18 +175,18 @@ public class MalRepairTest {
     public void evidence_detects_playback_tag_and_ledger() {
         Map<String, Integer> ledger = new HashMap<>();
         ledger.put(Watched.norm("X") + "|1", 100);
-        assertTrue(MalRepair.evidence(row(1, "", GREY, 60, "X", "X"), ledger));
-        assertTrue(MalRepair.evidence(row(1, "", WARM, -1, "X", "X"), ledger));
-        assertTrue(MalRepair.evidence(row(1, "", GREY, -1, "X", "X"), ledger));
-        assertFalse(MalRepair.evidence(row(1, "", GREY, -1, "Y", "Y"), ledger));
+        assertTrue(MalRepair.evidence(row(1, "", DARK, 60, "X", "X"), ledger)); // playback
+        assertTrue(MalRepair.evidence(row(1, "", GREY, -1, "X", "X"), ledger)); // real tag
+        assertTrue(MalRepair.evidence(row(1, "", DARK, -1, "X", "X"), ledger)); // ledger
+        assertFalse(MalRepair.evidence(row(1, "", DARK, -1, "Y", "Y"), ledger));
     }
 
     @Test
     public void pushedApplied_uses_highest_episode_signature() {
         List<Store.Row> rows = new ArrayList<>();
-        rows.add(row(10, "watching|2", GREY, -1, "Ghost", "Ghost"));
-        rows.add(row(10, "watching|11", GREY, -1, "Ghost", "Ghost"));
-        rows.add(row(11, "watching|3", GREY, -1, "Other", "Other"));
+        rows.add(row(10, "watching|2", DARK, -1, "Ghost", "Ghost"));
+        rows.add(row(10, "watching|11", DARK, -1, "Ghost", "Ghost"));
+        rows.add(row(11, "watching|3", DARK, -1, "Other", "Other"));
         assertEquals("watching|11", MalRepair.pushedApplied(rows, 10));
         assertEquals("watching|3", MalRepair.pushedApplied(rows, 11));
         assertEquals("", MalRepair.pushedApplied(rows, 99));
@@ -191,16 +199,16 @@ public class MalRepairTest {
         Map<String, Integer> empty = new HashMap<>();
         List<Store.Row> rows = new ArrayList<>();
         // series 101: pushed bogus "completed|12", MAL identical, unrated -> revert
-        rows.add(row(101, "completed|12", GREY, -1, "Liar", "Liar"));
+        rows.add(row(101, "completed|12", DARK, -1, "Liar", "Liar"));
         // series 102: pushed bogus but user rated it -> keep
-        rows.add(row(102, "completed|12", GREY, -1, "Rated", "Rated"));
+        rows.add(row(102, "completed|12", DARK, -1, "Rated", "Rated"));
         // series 103: pushed bogus but user advanced to watching -> keep
-        rows.add(row(103, "completed|12", GREY, -1, "Moved", "Moved"));
+        rows.add(row(103, "completed|12", DARK, -1, "Moved", "Moved"));
         // series 104: real playback -> keep
-        rows.add(row(104, "completed|12", GREY, 100, "Real", "Real"));
-        // series 105: grey artifact push BUT sibling played -> not a candidate
-        rows.add(row(105, "completed|12", GREY, -1, "Hybrid", "Hybrid"));
-        rows.add(row(105, "completed|12", GREY, 100, "Hybrid", "Hybrid"));
+        rows.add(row(104, "completed|12", DARK, 100, "Real", "Real"));
+        // series 105: untagged artifact push BUT sibling played -> not a candidate
+        rows.add(row(105, "completed|12", DARK, -1, "Hybrid", "Hybrid"));
+        rows.add(row(105, "completed|12", DARK, 100, "Hybrid", "Hybrid"));
 
         Map<Integer, String> mal = new HashMap<>();
         mal.put(101, "completed|12|0");  // exactly our bogus write

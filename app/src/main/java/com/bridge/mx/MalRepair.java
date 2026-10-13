@@ -14,16 +14,22 @@ import java.util.TreeMap;
 /**
  * Automatic repair of bogus MAL writes.
  *
- * <p>Origin: a color-classifier bug read untagged neutral-grey rows (which
- * MX shows label-less, 0x888888 and friends) as "finished" and pushed watch
- * progress for them to the user's live MAL account (31 writes / 23 series on
- * the 2026-10-10 audit). MAL has no undo, and the account is the user's
- * proof-of-watch, so the repair is deliberately conservative:
+ * <p>Origin: a color-classifier bug pushed watch progress to the user's live
+ * MAL account for rows that carried no genuine watch evidence. MAL has no undo,
+ * and the account is the user's proof-of-watch, so the repair is deliberately
+ * conservative.
+ *
+ * <p>IMPORTANT (2026-10-13): the original trigger — "pushed + neutral grey +
+ * no playback" — proved to be a FALSE signature. The grey ink is MX's real
+ * <em>finished</em> tag on 3.3.1, and the user confirmed all 18 such reverts
+ * were genuine watches. A row that carries a real tag
+ * ({@link ColorClassify#hasTag}) is therefore never an artifact; the repair now
+ * only looks at pushed rows with NO tag ink and no playback/ledger evidence.
  *
  * <ul>
  *   <li>Only series whose rows are STILL the artifact signature qualify:
- *       pushed ({@code applied != ""}), neutral-grey untagged
- *       ({@link ColorClassify#isNeutral}), with no playback evidence
+ *       pushed ({@code applied != ""}), with NO real tag
+ *       ({@code !ColorClassify.hasTag(rgb)}), with no playback evidence
  *       (row watched %, watched ledger) — a real tag or any playback rules
  *       them out.
  *   <li>A write is withdrawn only when MAL currently holds EXACTLY what we
@@ -107,8 +113,10 @@ public final class MalRepair {
     }
 
     /**
-     * Is this row the artifact signature of the old bug? Pushed, neutral grey
-     * (untagged), and no playback evidence on the row itself.
+     * Is this row the artifact signature? Pushed, with NO real MX tag (the
+     * dark-indigo "no label" ink or an unknown colour), and no playback
+     * evidence on the row itself. A grey (finished) or blue (played) row is
+     * genuine and never qualifies.
      *
      * <p>Note this is row-level evidence; {@link #candidates} additionally
      * drops an id when a SIBLING row of the same series carries evidence
@@ -123,7 +131,7 @@ public final class MalRepair {
         if ("plan_to_watch|0".equals(r.applied)) return false;
         if (r.watchedPct >= 0) return false;                        // real playback
         if (r.rgb == -1) return false;                              // never sampled
-        if (!ColorClassify.isNeutral(r.rgb)) return false;          // real tag -> genuine
+        if (ColorClassify.hasTag(r.rgb)) return false;              // real tag -> genuine
         if (matchesLedger(ledger, r.parsedTitle) || matchesLedger(ledger, r.matchTitle)) {
             return false;                                           // watched ledger has it
         }
@@ -133,7 +141,7 @@ public final class MalRepair {
     /** Any positive watch evidence on one row: playback, a real tag, or the ledger. */
     static boolean evidence(Store.Row o, Map<String, Integer> ledger) {
         if (o.watchedPct >= 0) return true;
-        if (o.rgb != -1 && !ColorClassify.isNeutral(o.rgb)) return true;
+        if (o.rgb != -1 && ColorClassify.hasTag(o.rgb)) return true;
         if (matchesLedger(ledger, o.parsedTitle) || matchesLedger(ledger, o.matchTitle)) {
             return true;
         }
@@ -309,7 +317,7 @@ public final class MalRepair {
     /**
      * Remove the shield for a series and hand its rows back to the normal
      * pipeline: evidence rows (played / real tag) become actionable again with
-     * a clean {@code applied} so the planner re-writes them; grey artifact
+     * a clean {@code applied} so the planner re-writes them; untagged artifact
      * rows stay suppressed ({@code none}{@code plan_to_watch|0}).
      */
     private static void unshield(Context c, int id) {
@@ -319,13 +327,13 @@ public final class MalRepair {
             if (o.watchedPct >= 0) {
                 o.state = PlaybackTracker.isFinished(o.watchedPct) ? "finished" : "watching";
                 o.applied = "";
-            } else if (o.rgb != -1 && !ColorClassify.isNeutral(o.rgb)) {
+            } else if (o.rgb != -1 && ColorClassify.hasTag(o.rgb)) {
                 String s = ColorClassify.classify((o.rgb >> 16) & 0xFF,
                         (o.rgb >> 8) & 0xFF, o.rgb & 0xFF);
                 o.state = (s == null) ? "none" : s;
                 o.applied = "";
             }
-            // else: grey, evidence-free row -> keep "none"/plan_to_watch|0
+            // else: untagged, evidence-free row -> keep "none"/plan_to_watch|0
         }
         Store.save();
     }

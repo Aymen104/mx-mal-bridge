@@ -1,49 +1,57 @@
 package com.bridge.mx;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 /**
- * The row-colour verdict, including the neutral-grey guard that ended the
- * "every label-less row looks watched" defect.
+ * The row-colour verdict, calibrated on MX 3.3.1 (2026-10-13 "Mark as"
+ * round-trip on a single file, confirmed against the live list and the user's
+ * watched ledger).
+ *
+ * <p>Grey is now <em>finished</em> — MX hides all text for a finished row, so
+ * the ink colour is the only signal that credits episode N instead of N-1.
  */
 public class ColorClassifyTest {
 
     @Test
-    public void plainGreyIsNoTagNeverFinished() {
-        // 0x888888 is the exact colour 51 rows sampled; 0x878a91 the Youjo
-        // Shenki 2 row. All must read as "no tag", never "finished".
-        assertEquals("none", ColorClassify.classify(0x88, 0x88, 0x88));
-        assertEquals("none", ColorClassify.classify(0x85, 0x85, 0x85));
-        assertEquals("none", ColorClassify.classify(0x87, 0x8a, 0x91));
+    public void measuredCentroidsClassify() {
+        assertEquals("watching", ColorClassify.classify(19, 89, 216));   // blue  = last played
+        assertEquals("finished", ColorClassify.classify(136, 136, 136)); // grey  = finished
+        assertEquals("none", ColorClassify.classify(53, 52, 76));        // dark  = no label
     }
 
     @Test
-    public void tintedCentroidsStillClassify() {
-        assertEquals("watching", ColorClassify.classify(103, 125, 179)); // blue
-        assertEquals("finished", ColorClassify.classify(167, 149, 132)); // warm
-        assertEquals("none", ColorClassify.classify(123, 105, 101));     // brown = no label
+    public void greyIsFinishedNotNone() {
+        // 0x888888 is the exact grey MX paints a finished title; its
+        // neighbours must all read "finished", never "none".
+        assertEquals("finished", ColorClassify.classify(0x88, 0x88, 0x88));
+        assertEquals("finished", ColorClassify.classify(0x85, 0x85, 0x85));
+        assertEquals("finished", ColorClassify.classify(0x8a, 0x88, 0x86));
+    }
+
+    @Test
+    public void darkIndigoIsUntagged() {
+        // The unwatched "no label" ink (None / NEW share it).
+        assertEquals("none", ColorClassify.classify(53, 52, 76));
+        assertEquals("none", ColorClassify.classify(60, 58, 80));
     }
 
     @Test
     public void farColourIsUnknown() {
-        assertNull(ColorClassify.classify(10, 200, 10));
+        assertNull(ColorClassify.classify(10, 200, 10)); // green: no MX state
+        assertNull(ColorClassify.classify(94, 94, 106)); // halfway grey/dark: abstain
     }
 
     @Test
-    public void neutralSpreadBoundary() {
-        assertTrue(ColorClassify.isNeutral(140, 136, 132));   // spread 8
-        assertTrue(ColorClassify.isNeutral(136, 136, 136));   // spread 0
-        assertTrue(!ColorClassify.isNeutral(167, 149, 132));  // the finished centroid
-        assertTrue(!ColorClassify.isNeutral(103, 125, 179));  // the played centroid
-    }
-
-    @Test
-    public void slightlyWarmGreyIsStillRejected() {
-        // A warm-ish grey must not slide into the finished centroid.
-        assertEquals("none", ColorClassify.classify(150, 146, 140));
+    public void hasTagOnlyForPlayedAndFinished() {
+        assertTrue(ColorClassify.hasTag(19, 89, 216));   // blue  = tag
+        assertTrue(ColorClassify.hasTag(136, 136, 136)); // grey  = tag
+        assertTrue(ColorClassify.hasTag((136 << 16) | (136 << 8) | 136)); // packed grey
+        assertFalse(ColorClassify.hasTag(53, 52, 76));   // dark  = no tag
+        assertFalse(ColorClassify.hasTag(10, 200, 10));  // unknown = no tag
     }
 }

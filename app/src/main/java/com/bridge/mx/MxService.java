@@ -65,7 +65,7 @@ public class MxService extends AccessibilityService {
     private static final int NOTIFY_ID = 1001;
 
     // Colour classification lives in ColorClassify (pure, unit-tested): the
-    // calibrated centroids AND the neutral-grey guard are defined there.
+    // calibrated blue/grey/dark centroids are defined there.
 
     private static MxService instance;
 
@@ -126,6 +126,11 @@ public class MxService extends AccessibilityService {
         kickLibScan();
         // first background sync shortly after connect, then every ~20 min
         armNext(8_000);
+        // If MX is already on screen (the common case when the service is
+        // re-enabled mid-playback, or after an app update), start sampling at
+        // once. No MX accessibility event is guaranteed to arrive, so without
+        // this a whole playback session could pass unseen.
+        ensurePlayerWatch();
         Log.i(TAG, "service connected");
     }
 
@@ -204,23 +209,19 @@ public class MxService extends AccessibilityService {
 
     // ------------------------------------------------------------- local IO
 
-    /** Read the current MX list window into the store (read-only). */
-    public void collect(String why) {
+    /**
+     * Read the current MX list window into the store (read-only).
+     *
+     * @return the number of MX rows actually read (0 when no MX window is
+     *         reachable — e.g. MX is closed and this bridge is in the foreground)
+     */
+    public int collect(String why) {
         try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            AccessibilityNodeInfo root = findMxRoot();
             if (root == null) {
-                List<AccessibilityWindowInfo> wins = getWindows();
-                if (wins != null) {
-                    for (AccessibilityWindowInfo w : wins) {
-                        AccessibilityNodeInfo r = w.getRoot();
-                        if (r != null && isMx(String.valueOf(r.getPackageName()))) {
-                            root = r;
-                            break;
-                        }
-                    }
-                }
+                Log.i(TAG, "collect(" + why + "): no MX window reachable");
+                return 0;
             }
-            if (root == null) return;
 
             List<AccessibilityNodeInfo> all = flatten(root);
             int found = 0;
@@ -233,10 +234,10 @@ public class MxService extends AccessibilityService {
                     found++;
                 }
             }
+            Log.i(TAG, "collect(" + why + "): " + found + " rows");
             if (found > 0) {
                 Store.save();
                 Store.notifyChanged();
-                Log.i(TAG, "collect(" + why + "): " + found + " rows");
                 updateNotification(null);
                 int unknown = 0;
                 int watching = 0;
@@ -252,9 +253,37 @@ public class MxService extends AccessibilityService {
                     requestClassify();
                 }
             }
+            return found;
         } catch (Throwable t) {
             Report.err("collect", "reading MX list failed (" + why + ")", t);
+            return 0;
         }
+    }
+
+    /**
+     * The root of a reachable MX Player window, or null.
+     *
+     * <p>The active window is used when it already belongs to MX. Otherwise
+     * every interactive window is searched for one owned by MX. This matters
+     * because the user taps "Scan" from this bridge's own UI, which makes the
+     * bridge — not MX — the active window; relying on the active window alone
+     * then reads zero rows.
+     */
+    private AccessibilityNodeInfo findMxRoot() {
+        AccessibilityNodeInfo active = getRootInActiveWindow();
+        if (active != null && isMx(String.valueOf(active.getPackageName()))) {
+            return active;
+        }
+        List<AccessibilityWindowInfo> wins = getWindows();
+        if (wins != null) {
+            for (AccessibilityWindowInfo w : wins) {
+                AccessibilityNodeInfo r = w.getRoot();
+                if (r != null && isMx(String.valueOf(r.getPackageName()))) {
+                    return r;
+                }
+            }
+        }
+        return null;
     }
 
     private Store.Row readRow(AccessibilityNodeInfo item) {
@@ -321,6 +350,7 @@ public class MxService extends AccessibilityService {
         r.parsedTitle = parsed.title;
         r.ep = parsed.ep;
         r.fromLib = false;
+        r.playedAt = played == null ? "" : played;
         if (badge != null && !badge.isEmpty()) r.state = "new";
         else if (played != null && !played.isEmpty()) r.state = "watching";
         else r.state = "unknown";
@@ -396,7 +426,6 @@ public class MxService extends AccessibilityService {
         boolean any = false;
         int bw = bmp.getWidth(), bh = bmp.getHeight();
         for (Store.Row r : Store.all()) {
-            if ("finished".equals(r.state) || "none".equals(r.state)) continue;
             int l = Math.max(0, r.left), t = Math.max(0, r.top);
             int rr = Math.min(bw, r.right), bb = Math.min(bh, r.bottom);
             int w = rr - l, h = bb - t;
@@ -454,15 +483,19 @@ public class MxService extends AccessibilityService {
             if (verdict == null) continue;
             boolean textState = "watching".equals(r.state) || "new".equals(r.state)
                     || "present".equals(r.state);
+            String next = r.state;
             if (textState) {
-                // A row MX gave a label/badge: only a colour verdict of
-                // "finished" may override it (label + grey tag can coexist).
-                if ("finished".equals(verdict)) {
-                    r.state = "finished";
-                    any = true;
-                }
+                // A row MX gave a label/badge: a blue "watching" verdict only
+                // agrees with the "Played" text, so only "finished" (grey) may
+                // override it (label + grey tag can coexist).
+                if ("finished".equals(verdict)) next = "finished";
             } else {
-                r.state = verdict;
+                // Label-less row: the ink colour IS the verdict — grey =
+                // finished, blue = last played, dark indigo = no label.
+                next = verdict;
+            }
+            if (!next.equals(r.state)) {
+                r.state = next;
                 any = true;
             }
         }
@@ -607,7 +640,7 @@ public class MxService extends AccessibilityService {
         int ep = p.ep < 0 ? 0 : p.ep;
 
         int before = Watched.percent(series, ep);
-        boolean raised = Watched.record(series, ep, pct);
+        boolean raised = Watched.record(series, ep, pct, "a11y");
         applyProgress(series, ep, pct);
         if (raised) {
             Report.info("player", "watch " + series + " ep" + ep + " -> " + pct
@@ -622,22 +655,7 @@ public class MxService extends AccessibilityService {
 
     /** Reflect an observed percent onto the store rows of that series/episode. */
     private void applyProgress(String series, int ep, int pct) {
-        boolean any = false;
-        String sn = Watched.norm(series);
-        for (Store.Row r : Store.all()) {
-            String rn = Watched.norm(r.parsedTitle.isEmpty() ? r.title : r.parsedTitle);
-            if (!rn.equals(sn)) continue;
-            if (ep > 0 && r.ep > 0 && r.ep != ep) continue;
-            if (pct > r.watchedPct) {
-                r.watchedPct = pct;
-                any = true;
-            }
-            if (PlaybackTracker.isFinished(pct) && !"finished".equals(r.state)) {
-                r.state = "finished";
-                any = true;
-            }
-        }
-        if (any) {
+        if (Progress.apply(series, ep, pct)) {
             Store.save();
             Store.notifyChanged();
             updateNotification(null);

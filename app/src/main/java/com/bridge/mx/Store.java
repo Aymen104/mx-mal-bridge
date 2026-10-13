@@ -45,6 +45,7 @@ public class Store {
         public String applied = "";    // "status|eps" last pushed to MAL
         public String matchTried = ""; // parsedTitle we already searched for
         public int watchedPct = -1;    // max % of the episode played in MX (>=95 finished)
+        public String playedAt = "";   // MX's "last played" label, e.g. "Played 1 day ago"
         public boolean fromLib = false; // true while only known from the MediaStore scan
     }
 
@@ -180,6 +181,15 @@ public class Store {
             }
             if (r.rgb < 0) r.rgb = old.rgb;
             if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
+            // The played date is the list reader's persistent "touched" evidence:
+            // an observation without a date must never erase one already known.
+            if (r.playedAt.isEmpty()) r.playedAt = old.playedAt;
+            // ...and a label-less re-read (MX hides the "last played" text while
+            // scrolling) must not walk a known-played row back to "unknown".
+            if (!r.playedAt.isEmpty() && "unknown".equals(r.state)
+                    && ("watching".equals(old.state) || "finished".equals(old.state))) {
+                r.state = old.state;
+            }
             r.fromLib = r.fromLib && old.fromLib;
             // Keep derived data unless the source title changed.
             boolean sameSeries = r.title.equals(old.title)
@@ -221,6 +231,7 @@ public class Store {
                 o.put("applied", r.applied);
                 o.put("matchTried", r.matchTried);
                 o.put("watchedPct", r.watchedPct);
+                o.put("playedAt", r.playedAt);
                 o.put("fromLib", r.fromLib);
                 arr.put(o);
             }
@@ -268,6 +279,7 @@ public class Store {
                 r.applied = o.optString("applied", "");
                 r.matchTried = o.optString("matchTried", "");
                 r.watchedPct = o.optInt("watchedPct", -1);
+                r.playedAt = o.optString("playedAt", "");
                 r.fromLib = o.optBoolean("fromLib", false);
                 rows.put(r.key, r);
             }
@@ -361,6 +373,10 @@ public class Store {
         }
         if (keep.rgb < 0 && add.rgb >= 0) keep.rgb = add.rgb;
         if (add.watchedPct > keep.watchedPct) keep.watchedPct = add.watchedPct;
+        if ((keep.playedAt == null || keep.playedAt.isEmpty())
+                && add.playedAt != null && !add.playedAt.isEmpty()) {
+            keep.playedAt = add.playedAt;
+        }
         if ((keep.parsedTitle == null || keep.parsedTitle.isEmpty())
                 && add.parsedTitle != null && !add.parsedTitle.isEmpty()) {
             keep.parsedTitle = add.parsedTitle;
