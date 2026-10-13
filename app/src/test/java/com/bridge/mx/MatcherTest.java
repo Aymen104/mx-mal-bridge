@@ -3,6 +3,7 @@ package com.bridge.mx;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -98,7 +99,16 @@ public class MatcherTest {
     }
 
     @Test
-    public void confidentMatchNeverCallsBrain() throws Exception {
+    public void readyBrainWinsOverConfidentDeterministicMatch() throws Exception {
+        // The LLM is the priority matcher: even when the deterministic scorer
+        // is confident (0.85+), a ready brain is consulted and its grounded
+        // pick (here the continuation named by the file's own title) wins.
+        Matcher.Result r = Matcher.bestWithBrain(gintama(), "Gintama'", 48, grabs(9969));
+        assertEquals(9969, r.id);
+    }
+
+    @Test
+    public void brainAbstentionFallsBackToConfidentDeterministic() throws Exception {
         final boolean[] called = {false};
         MatchBrain brain = new MatchBrain() {
             @Override
@@ -109,12 +119,12 @@ public class MatcherTest {
             @Override
             public int pick(String want, int ep, List<Candidate> cands) {
                 called[0] = true;
-                return -1;
+                return -1; // the model abstains: "none fit"
             }
         };
         Matcher.Result r = Matcher.bestWithBrain(gintama(), "Gintama", 48, brain);
         assertEquals(918, r.id);
-        assertFalse(called[0]);
+        assertTrue("a ready brain must be consulted on every match", called[0]);
     }
 
     /** A brain that grabs a specific id when it can see it, else index 0. */

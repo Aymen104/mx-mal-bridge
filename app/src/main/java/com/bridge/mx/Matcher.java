@@ -35,7 +35,8 @@ public class Matcher {
         }
     }
 
-    /** Score at/above which the deterministic result is trusted without the LLM. */
+    /** Score at/above which the deterministic result is trusted when the brain
+     * is unavailable or abstains (the on-device LLM is the priority matcher). */
     private static final double CONFIDENT = 0.85;
     /** Minimum score for a fallback match when no brain answers. */
     private static final double ACCEPT = 0.50;
@@ -53,18 +54,19 @@ public class Matcher {
     }
 
     /**
-     * Deterministic match, falling back to a grounded {@link MatchBrain} when
-     * the best score is not confident. The brain only ever chooses among the
-     * real candidates produced here, so it can never fabricate a MAL id.
+     * Match, asking a grounded {@link MatchBrain} first whenever one is ready.
+     * The brain is the priority matcher: when it is loaded it is consulted on
+     * every match (not just the low-score leftovers), and its pick among the
+     * real candidates wins outright. The deterministic scorer is the safety net
+     * used only when no brain is available or it abstains.
+     *
+     * The brain only ever chooses among the real candidates produced here, so
+     * it can never fabricate a MAL id.
      */
     public static Result bestWithBrain(JSONArray data, String want, int ep,
                                        MatchBrain brain) throws Exception {
         List<Scored> ranked = rank(data, want, ep);
         if (ranked.isEmpty()) return null;
-
-        if (ranked.get(0).s >= CONFIDENT && plausible(ranked.get(0).r, want, ep)) {
-            return ranked.get(0).r;
-        }
 
         // Only entries structurally compatible with what we see on disk are
         // offered to the brain: a file at episode N cannot belong to a shorter
@@ -77,6 +79,9 @@ public class Matcher {
         }
         if (pool.isEmpty()) pool = ranked; // nothing better to offer
 
+        // LLM first: a ready brain decides every match, even the ones the
+        // deterministic scorer is already confident about. The brain is
+        // grounded (real candidates only), so its verdict is always safe.
         if (brain != null && brain.ready()) {
             List<MatchBrain.Candidate> cands = new ArrayList<>();
             int n = Math.min(pool.size(), BRAIN_TOP_N);
@@ -88,8 +93,12 @@ public class Matcher {
             if (pick >= 0 && pick < n) return pool.get(pick).r;
         }
 
-        // Deterministic fallback, preferring a structurally compatible entry
-        // over the raw top score (which may be a sequel/movie/unaired entry).
+        // No brain (or it abstained): deterministic fallback, preferring a
+        // structurally compatible entry over the raw top score (which may be
+        // a sequel/movie/unaired entry).
+        if (ranked.get(0).s >= CONFIDENT && plausible(ranked.get(0).r, want, ep)) {
+            return ranked.get(0).r;
+        }
         for (Scored sc : ranked) {
             if (plausible(sc.r, want, ep) && sc.s >= ACCEPT) return sc.r;
         }

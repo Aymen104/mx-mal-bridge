@@ -3,12 +3,15 @@ package com.bridge.mx;
 import java.util.List;
 
 /**
- * A pluggable "second opinion" for title matching.
+ * The priority title matcher of the app: a grounded on-device {@link LlmBrain}
+ * consulted on every match when it is loaded.
  *
- * <p>The deterministic {@link Matcher} is the primary matcher. When its best
- * score is low or ambiguous, a brain is asked to choose among the real MAL
- * search candidates. Implementations are grounded: they may only pick from the
- * candidate list they are given and can never invent a MAL id.
+ * <p>The deterministic {@link Matcher} ranks the real MAL search candidates;
+ * when this brain is ready it is asked to choose among them (each match, not
+ * just the low-score leftovers) and its pick wins. The deterministic scorer is
+ * the fallback only when no brain is available or it abstains.
+ * Implementations are grounded: they may only pick from the candidate list
+ * they are given and can never invent a MAL id.
  */
 public interface MatchBrain {
 

@@ -78,8 +78,10 @@ the background service may write anything on its own.
   local, read-only).
 - Network work (MAL search for newly seen titles + optional auto-apply) runs
   on a **~24 minute cadence**, at most 40 new matches per tick, with dedupe so
-  nothing is searched or pushed twice. Already-matched titles are skipped, so
-  the on-device LLM only ever sees the unmatched leftovers.
+  nothing is searched or pushed twice. **LLM-first matching:** when the on-device
+  LLM is loaded it decides every title match (it is consulted before the
+  deterministic scorer, which stays as the fallback when the model is absent or
+  abstains), so the strongest matcher is always given priority over heuristics.
 - A low-priority status notification shows rows / planned / auto / countdown
   to the next sync.
 

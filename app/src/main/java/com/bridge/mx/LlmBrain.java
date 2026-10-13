@@ -8,13 +8,16 @@ import java.io.File;
 import java.util.List;
 
 /**
- * On-device grounded match fallback backed by a small local LLM.
+ * On-device grounded priority matcher backed by a small local LLM.
+ *
+ * <p>When the model is loaded the LLM decides every title match (it is
+ * consulted before the deterministic scorer); when it is absent the brain
+ * reports not-ready and the deterministic matcher keeps working.
  *
  * <p>Runs a MediaPipe LLM Inference {@code .task} bundle (default:
  * Qwen2.5-0.5B-Instruct, ~521 MB) entirely on the phone. The model file is not
  * bundled in the APK; it is downloaded (or side-loaded) to
- * {@code <externalFilesDir>/llm/model.task}. When it is absent the brain simply
- * reports not-ready and the deterministic matcher keeps working.
+ * {@code <externalFilesDir>/llm/model.task}.
  *
  * <p>Inference is CPU-only and serialised (MediaPipe forbids concurrent
  * generation from one engine), so callers should invoke {@link #pick} off the
