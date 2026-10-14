@@ -953,14 +953,26 @@ public class MainActivity extends Activity implements Store.Listener {
         });
     }
 
+    /**
+     * A row is only "pending" when pushing it would actually CHANGE something
+     * on MAL: it has a plan, a real match, a concrete episode count for
+     * "completed", and the plan differs from what we last wrote
+     * ({@code applied}). A row whose plan already equals {@code applied} is in
+     * sync — counting it as "ready to send" made the header read "53 ready"
+     * while nothing was actually queued (2026-10-14).
+     */
+    private static boolean needsPush(Store.Row r) {
+        if (r.planStatus.isEmpty()) return false;
+        if (r.matchId <= 0) return false;
+        if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
+        return !(r.planStatus + "|" + r.planEps).equals(r.applied);
+    }
+
     /** Rows whose plan can be applied now (matched, and not a bogus completion). */
     private List<Store.Row> pendingQueue() {
         List<Store.Row> q = new ArrayList<>();
         for (Store.Row r : Store.all()) {
-            if (r.planStatus.isEmpty()) continue;
-            boolean safe = r.matchId > 0
-                    && !("completed".equals(r.planStatus) && r.planEps < 0);
-            if (safe) q.add(r);
+            if (needsPush(r)) q.add(r);
         }
         return q;
     }
@@ -987,14 +999,23 @@ public class MainActivity extends Activity implements Store.Listener {
     private void doApply() {
         final List<Store.Row> q = pendingQueue();
         int unmatched = 0;
+        int withPlan = 0;
         for (Store.Row r : Store.all()) {
             if (r.planStatus.isEmpty()) continue;
+            withPlan++;
             boolean safe = r.matchId > 0
                     && !("completed".equals(r.planStatus) && r.planEps < 0);
             if (!safe) unmatched++;
         }
         if (q.isEmpty()) {
-            say("Apply: nothing ready. Run Scan > Plan > Match first.");
+            if (withPlan == 0) {
+                say("Apply: nothing ready. Run Scan > Plan > Match first.");
+            } else {
+                say("Apply: nothing to send \u2014 all " + withPlan
+                        + " planned row(s) already match MyAnimeList"
+                        + (unmatched > 0 ? " (" + unmatched + " have no MAL match)" : "")
+                        + ".");
+            }
             return;
         }
         StringBuilder msg = new StringBuilder();
@@ -1070,7 +1091,7 @@ public class MainActivity extends Activity implements Store.Listener {
         int rows = Store.all().size();
         int planned = 0;
         for (Store.Row r : Store.all()) {
-            if (!r.planStatus.isEmpty()) planned++;
+            if (needsPush(r)) planned++;
         }
         boolean auto = Store.autoApply();
 
@@ -1244,8 +1265,24 @@ public class MainActivity extends Activity implements Store.Listener {
             if (!r.planText.isEmpty()) {
                 h.plan.setVisibility(View.VISIBLE);
                 String pt = r.planText;
-                if (pt.startsWith("\u2192 ")) pt = "Will send to MAL: " + pt.substring(2);
-                h.plan.setText(pt);
+                String text;
+                if (pt.startsWith("\u2192 ")) {
+                    String body = pt.substring(2);
+                    if (body.startsWith("kept")) {
+                        // Deliberate no-op: MAL is ahead, we never downgrade.
+                        String detail = body.substring(4);
+                        if (detail.startsWith(",")) detail = detail.substring(1).trim();
+                        text = "\u2713 Kept as-is" + (detail.isEmpty() ? "" : ": " + detail);
+                    } else if (needsPush(r)) {
+                        text = "Will send to MAL: " + body;
+                    } else {
+                        // Already written — do not say "will send" (it won't).
+                        text = "\u2713 In sync: " + body;
+                    }
+                } else {
+                    text = pt;
+                }
+                h.plan.setText(text);
             } else {
                 h.plan.setVisibility(View.GONE);
             }
