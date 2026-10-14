@@ -60,6 +60,11 @@ import java.util.Map;
 public class Planner {
 
     public static void rebuild() {
+        // Playback is the strongest single-episode evidence: pull it onto the
+        // rows first, so an episode the sampler watched before the list reader
+        // ever saw its row still reaches the right state and percent (and so a
+        // partially-watched episode is never left looking "new").
+        Progress.hydrate();
         // ---- per-row parse + stale-match reset ----
         for (Store.Row r : Store.all()) {
             EpisodeParser.Parsed p = EpisodeParser.parse(r.title);

@@ -236,6 +236,9 @@ public class MxService extends AccessibilityService {
             }
             Log.i(TAG, "collect(" + why + "): " + found + " rows");
             if (found > 0) {
+                // Resolve playback-derived states (and credit late rows) before
+                // the list read is persisted, then plan against the fresh state.
+                Planner.rebuild();
                 Store.save();
                 Store.notifyChanged();
                 updateNotification(null);
@@ -677,6 +680,9 @@ public class MxService extends AccessibilityService {
     /** Reflect an observed percent onto the store rows of that series/episode. */
     private void applyProgress(String series, int ep, int pct) {
         if (Progress.apply(series, ep, pct)) {
+            // A watch can move episode N vs N-1 right now; re-plan immediately
+            // instead of waiting for the ~24 min tick.
+            Planner.rebuild();
             Store.save();
             Store.notifyChanged();
             updateNotification(null);

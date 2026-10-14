@@ -186,12 +186,23 @@ public class Store {
             // classify pass re-reads it (which can also move it back to
             // "watching" when the ink is blue again).
             if ("finished".equals(old.state)
-                    && ("watching".equals(r.state) || "unknown".equals(r.state))) {
+                    && ("watching".equals(r.state) || "unknown".equals(r.state)
+                        || "new".equals(r.state))) {
                 r.state = "finished";
                 if (r.rgb < 0) r.rgb = old.rgb;
             }
             if (r.rgb < 0) r.rgb = old.rgb;
             if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
+            // Playback evidence outranks MX's NEW badge: the badge clears only
+            // when MX re-reads the item, so a list re-read can arrive after the
+            // sampler already saw the episode play. Never walk a watched row
+            // back to "new" (that is what left freshly downloaded, watched
+            // episodes looking undetected).
+            if ("new".equals(r.state) && r.watchedPct > 0
+                    && !"finished".equals(old.state)) {
+                r.state = PlaybackTracker.isFinished(r.watchedPct)
+                        ? "finished" : "watching";
+            }
             // The played date is the list reader's persistent "touched" evidence:
             // an observation without a date must never erase one already known.
             if (r.playedAt.isEmpty()) r.playedAt = old.playedAt;
