@@ -43,8 +43,11 @@ import java.util.TreeMap;
  *       pushed (same status and episode count) and the entry has no user
  *       score ({@code score == 0}). Anything the user rated or has since
  *       moved on is left untouched.
- *   <li>Withdrawing = {@code plan_to_watch|0} (MAL v2 has no delete
- *       endpoint; this erases the watched count/score history).
+ *   <li>Withdrawing = DELETE the entry from the user's list (MAL v2
+ *       {@code DELETE /anime/{id}/my_list_status}). Parking it as
+ *       {@code plan_to_watch|0} still left the fabricated show "showing" on
+ *       the account, which the user reported on 2026-10-14; a fabricated
+ *       entry is removed outright.
  *   <li>Reverted ids are remembered; the bridge will not re-push them until
  *       real evidence appears (playback or a real tag), which clears the
  *       mark. Rows are also neutralized to {@code none}/{@code plan_to_watch|0}.
@@ -79,7 +82,7 @@ public final class MalRepair {
 
     /** Keep/withdraw verdict for one candidate id. */
     enum Action {
-        REVERT,      // withdraw the bogus write (plan_to_watch|0)
+        REVERT,      // delete the fabricated entry from the user's list
         KEEP_RATED,  // user gave it a score -> genuine
         KEEP_MOVED,  // user has since changed status/episodes -> hands off
         KEEP_ABSENT, // not on the MAL list anymore
@@ -329,17 +332,23 @@ public final class MalRepair {
         return new Result(true, line);
     }
 
+    /**
+     * Undo a fabricated write: DELETE the entry from the user's list. Merely
+     * parking it as plan_to_watch left the fabricated show "still showing" on
+     * the user's account (2026-10-14). The bridge created the entry from file
+     * presence, so removing it is the true undo.
+     */
     private static void revert(Context c, int id, String pushed) {
         try {
-            MalClient.updateStatus(c, id, "plan_to_watch", 0);
+            MalClient.deleteStatus(c, id);
         } catch (Exception e) {
             Report.err("malrepair", "revert failed for " + id, e);
             return; // keep the ledger clean: nothing happened on MAL
         }
         prefs(c).edit().putString("r:" + id, pushed + "|" + System.currentTimeMillis()).apply();
         neutralize(c, id);
-        Report.info("malrepair", "reverted bogus write: " + id + " (" + pushed
-                + ") -> plan_to_watch|0");
+        Report.info("malrepair", "deleted fabricated write: " + id + " (" + pushed
+                + ") - entry removed from MAL");
     }
 
     /**

@@ -411,6 +411,21 @@ public class MalClient {
         Log.i(TAG, "updateStatus success: " + code);
     }
 
+    /**
+     * Remove the anime from the user's list entirely (MAL v2 DELETE). Used to
+     * undo a write the bridge itself fabricated from file presence — parking it
+     * as plan_to_watch only left it "showing" on the user's list, so a fabricated
+     * entry is deleted instead.
+     */
+    public static void deleteStatus(Context c, int animeId) throws Exception {
+        Log.i(TAG, "deleteStatus: animeId=" + animeId);
+        String t = token(c);
+        if (t == null) throw new Exception("not logged in");
+        int code = request("DELETE", API + "anime/" + animeId + "/my_list_status", t, null);
+        if (code < 200 || code >= 300) throw new Exception("delete HTTP " + code);
+        Log.i(TAG, "deleteStatus success: " + code);
+    }
+
     /** Add anime to user's list (PUT - same endpoint as update, MAL handles both). */
     public static void addToList(Context c, int animeId, String status, int eps)
             throws Exception {
