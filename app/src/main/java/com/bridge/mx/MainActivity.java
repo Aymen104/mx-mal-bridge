@@ -40,17 +40,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Entire UI is built from code (no layout XML): a status line, a horizontal
- * button strip, the observed-episode list and a scrolling log. The activity
- * is a control panel / dry-run view; the real work happens in MxService.
+ * Entire UI is built from code (no layout XML): a plain-language status
+ * header, a small set of action buttons, the observed-episode list and a
+ * log that stays collapsed by default. The activity is a control panel /
+ * dry-run view; the real work happens in MxService.
  */
 public class MainActivity extends Activity implements Store.Listener {
 
-    private TextView status, logView;
+    private TextView statusHead, statusLine, statusAuto, statusDetails, logView, logToggle;
     private ListView list;
     private ScrollView logScroll;
-    private Button btnAuto;
+    private Button btnAuto, btnApply;
     private EpisodeAdapter adapter;
+    private boolean logOpen;
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
     private Handler ui;
 
@@ -87,17 +89,11 @@ public class MainActivity extends Activity implements Store.Listener {
             }
         }
 
-        say("MX-MAL Bridge v1 - declared made with AI (see README).");
-        say("Flow: tap Sync for the whole pipeline (MX + library + plan + match"
-                + " + apply when Auto is on). Individual steps (Scan MX, Library,"
-                + " Colors, Plan) and extras live under More \u22ee.");
-        say("Background: service auto-scans MX; network sync every "
-                + (MxService.PIPELINE_PERIOD_MS / 60000) + " min. Auto toggle = live writes.");
-        say("Watch progress: reads MX's MediaSession (More \u22ee > Watch: notification"
-                + " access, one-time). Real position/duration, no screen capture.");
-        say("AI: when the on-device model is loaded it decides every title match"
-                + " (priority matcher); the deterministic scorer is the fallback. Tap AI to"
-                + " load it (optional; app works without it).");
+        say("Welcome \u2014 tap \u201CSync now\u201D to read MX Player, scan your videos"
+                + " and work out what you have watched.");
+        say("Auto is OFF: nothing is written to MyAnimeList until you tap"
+                + " \u201CApply to MAL\u201D (or turn Auto ON).");
+        say("New here? Tap More \u22EE > \u201CHow it works\u201D.");
         say("Errors: " + safeReportPath());
         Retention.init(this);
         refreshStatus();
@@ -144,35 +140,63 @@ public class MainActivity extends Activity implements Store.Listener {
 
     private void buildUi() {
         float d = getResources().getDisplayMetrics().density;
-        int p8 = (int) (8 * d), p4 = (int) (4 * d), p6 = (int) (6 * d);
+        int p12 = (int) (12 * d), p8 = (int) (8 * d), p4 = (int) (4 * d), p6 = (int) (6 * d);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(p8, p8, p8, p8);
+        root.setPadding(p12, p12, p12, p8);
 
-        // status line
-        status = new TextView(this);
-        status.setTextSize(13);
-        status.setTypeface(Typeface.DEFAULT_BOLD);
-        status.setPadding(0, 0, 0, p4);
-        root.addView(status, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+        // Plain-language status: a headline, a one-line summary and the Auto
+        // state. No pipe-separated jargon a first-time user has to decode.
+        statusHead = new TextView(this);
+        statusHead.setTextSize(17);
+        statusHead.setTypeface(Typeface.DEFAULT_BOLD);
+        root.addView(statusHead, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Compact button strip: six weighted buttons share the row so nothing
-        // has to be scrolled sideways. Sync = one tap for the whole pipeline.
-        LinearLayout strip = new LinearLayout(this);
-        strip.setOrientation(LinearLayout.HORIZONTAL);
-        // One tap runs the whole safe pipeline (MX + library + plan + match,
-        // and apply when Auto is on); the individual steps stay under More.
-        addBtn(strip, "Sync", v -> doSync());
-        addBtn(strip, "Match", v -> doMatch());
-        addBtn(strip, "Apply", v -> doApply());
-        btnAuto = btn("Auto", v -> doAuto());
-        strip.addView(btnAuto, weight());
-        addBtn(strip, "AI", v -> doAi());
-        // …every other feature lives in the "More" menu (nothing removed).
-        addBtn(strip, "More \u22ee", this::showMoreMenu);
-        root.addView(strip, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+        statusLine = new TextView(this);
+        statusLine.setTextSize(14);
+        statusLine.setPadding(0, p4, 0, 0);
+        root.addView(statusLine, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        statusAuto = new TextView(this);
+        statusAuto.setTextSize(13);
+        statusAuto.setPadding(0, p4, 0, 0);
+        root.addView(statusAuto, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // The old cryptic line survives here, small and dim, for anyone who
+        // wants the raw numbers.
+        statusDetails = new TextView(this);
+        statusDetails.setTextSize(10);
+        statusDetails.setTextColor(0xFF888888);
+        statusDetails.setPadding(0, p4, 0, p6);
+        root.addView(statusDetails, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Two rows of clear controls. "Sync now" is the one tap that does the
+        // whole safe pipeline; the rest are the few things a normal user needs.
+        // Every other feature stays under More (nothing removed).
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button sync = btn("Sync now", v -> doSync());
+        sync.setTextSize(15);
+        sync.setTypeface(Typeface.DEFAULT_BOLD);
+        row1.addView(sync, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 2.4f));
+        addBtn(row1, "More \u22EE", this::showMoreMenu);
+        root.addView(row1, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        btnApply = btn("Apply to MAL", v -> doApply());
+        row2.addView(btnApply, weight());
+        btnAuto = btn("Auto: OFF", v -> doAuto());
+        row2.addView(btnAuto, weight());
+        root.addView(row2, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // observed episodes
@@ -182,13 +206,19 @@ public class MainActivity extends Activity implements Store.Listener {
         root.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // log section
-        TextView logLabel = new TextView(this);
-        logLabel.setText("Log");
-        logLabel.setTextSize(12);
-        logLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        logLabel.setPadding(0, p4, 0, 0);
-        root.addView(logLabel, lp(ViewGroup.LayoutParams.MATCH_PARENT,
+        // Log: hidden behind a tap so the screen is calm by default.
+        logToggle = new TextView(this);
+        logToggle.setText("Log \u25B8  (tap to show)");
+        logToggle.setTextSize(12);
+        logToggle.setTypeface(Typeface.DEFAULT_BOLD);
+        logToggle.setPadding(0, p4, 0, p4);
+        logToggle.setOnClickListener(v -> {
+            logOpen = !logOpen;
+            logScroll.setVisibility(logOpen ? View.VISIBLE : View.GONE);
+            logToggle.setText(logOpen
+                    ? "Log \u25BE  (tap to hide)" : "Log \u25B8  (tap to show)");
+        });
+        root.addView(logToggle, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         logScroll = new ScrollView(this);
@@ -199,6 +229,7 @@ public class MainActivity extends Activity implements Store.Listener {
         logView.setPadding(p4, p4, p4, p4);
         logScroll.addView(logView, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+        logScroll.setVisibility(View.GONE);
         root.addView(logScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, (int) (130 * d)));
 
@@ -220,44 +251,74 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     /**
-     * The overflow menu: every feature that is not part of the one-tap core
-     * workflow (Scan / Match / Apply / Auto / AI). Keeping them here shrinks the
-     * toolbar without removing anything.
+     * The overflow menu: everything that is not part of the everyday flow
+     * (Sync / Apply / Auto). Keeping them here makes the main screen simple
+     * without removing any feature.
      */
     private void showMoreMenu(View anchor) {
         PopupMenu m = new PopupMenu(this, anchor);
-        m.getMenu().add(0, 1, 0, "Login to MAL");
-        m.getMenu().add(0, 2, 1, "Scan MX only");
-        m.getMenu().add(0, 3, 2, "Library scan");
-        m.getMenu().add(0, 4, 3, "Colors (classify)");
-        m.getMenu().add(0, 5, 4, "Plan");
-        m.getMenu().add(0, 6, 5, "Exam");
-        m.getMenu().add(0, 7, 6, "Drill (lessons)");
-        m.getMenu().add(0, 8, 7, "Self-test");
-        m.getMenu().add(0, 9, 8, "Titles (update)");
-        m.getMenu().add(0, 10, 9, "Repair");
-        m.getMenu().add(0, 11, 10, "Wipe");
-        m.getMenu().add(0, 12, 11, "Watch: notification access");
-        m.getMenu().add(0, 13, 12, "Watch log (audit)");
+        m.getMenu().add(0, 1, 0, "How it works (help)");
+        m.getMenu().add(0, 2, 1, "Login to MyAnimeList");
+        m.getMenu().add(0, 3, 2, "Match titles on MAL");
+        m.getMenu().add(0, 4, 3, "AI model (optional)");
+        m.getMenu().add(0, 5, 4, "Scan MX only");
+        m.getMenu().add(0, 6, 5, "Library scan");
+        m.getMenu().add(0, 7, 6, "Colors (classify)");
+        m.getMenu().add(0, 8, 7, "Plan");
+        m.getMenu().add(0, 9, 8, "Watch: notification access");
+        m.getMenu().add(0, 10, 9, "Watch log (audit)");
+        m.getMenu().add(0, 11, 10, "Exam");
+        m.getMenu().add(0, 12, 11, "Drill (lessons)");
+        m.getMenu().add(0, 13, 12, "Self-test");
+        m.getMenu().add(0, 14, 13, "Titles (update)");
+        m.getMenu().add(0, 15, 14, "Repair");
+        m.getMenu().add(0, 16, 15, "Wipe");
         m.setOnMenuItemClickListener((MenuItem item) -> {
             switch (item.getItemId()) {
-                case 1: doLogin(); return true;
-                case 2: doScan(); return true;
-                case 3: doLibScan(); return true;
-                case 4: doColors(); return true;
-                case 5: doPlan(); return true;
-                case 6: doExam(); return true;
-                case 7: doDrill(); return true;
-                case 8: doTest(); return true;
-                case 9: doTitles(); return true;
-                case 10: doRepair(); return true;
-                case 11: doWipe(); return true;
-                case 12: doWatchAccess(); return true;
-                case 13: doWatchLog(); return true;
+                case 1: doHelp(); return true;
+                case 2: doLogin(); return true;
+                case 3: doMatch(); return true;
+                case 4: doAi(); return true;
+                case 5: doScan(); return true;
+                case 6: doLibScan(); return true;
+                case 7: doColors(); return true;
+                case 8: doPlan(); return true;
+                case 9: doWatchAccess(); return true;
+                case 10: doWatchLog(); return true;
+                case 11: doExam(); return true;
+                case 12: doDrill(); return true;
+                case 13: doTest(); return true;
+                case 14: doTitles(); return true;
+                case 15: doRepair(); return true;
+                case 16: doWipe(); return true;
                 default: return false;
             }
         });
         m.show();
+    }
+
+    /** Plain-language explanation for a first-time user. */
+    private void doHelp() {
+        new AlertDialog.Builder(this)
+                .setTitle("How it works")
+                .setMessage(
+                        "1. Watch or download something in MX Player.\n\n"
+                        + "2. Open this app and tap \u201CSync now\u201D. It reads MX Player,"
+                        + " scans your Download folder, and works out which episodes"
+                        + " you have watched.\n\n"
+                        + "3. Tap \u201CApply to MAL\u201D to write those episodes to"
+                        + " MyAnimeList \u2014 or turn Auto ON and it will write them for"
+                        + " you whenever it syncs (about every 24 min).\n\n"
+                        + "Auto is OFF by default, so nothing is ever written to"
+                        + " MyAnimeList until you ask. Everything on the screen is"
+                        + " just a preview.\n\n"
+                        + "\u2022 Green line under an episode = what will be sent to MAL.\n"
+                        + "\u2022 \u201CWatch progress\u201D (More) lets it read the exact"
+                        + " playback position \u2014 optional.\n"
+                        + "\u2022 \u201CAI model\u201D (More) is an optional on-device helper"
+                        + " for matching odd filenames; the app works without it.")
+                .setPositiveButton("Got it", null)
+                .show();
     }
 
     private LinearLayout.LayoutParams lp(int w, int h) {
@@ -304,8 +365,10 @@ public class MainActivity extends Activity implements Store.Listener {
         boolean on = !Store.autoApply();
         Store.setAutoApply(on);
         say(on
-                ? "Auto-sync ON: label changes will be pushed to MAL on the next sync tick."
-                : "Auto-sync OFF: dry-run only (manual Apply still asks first).");
+                ? "Auto-update ON: new watches are written to MyAnimeList automatically"
+                        + " on the next sync."
+                : "Auto-update OFF: preview only. Tap \u201CApply to MAL\u201D when you"
+                        + " want to write.");
         MxService s = MxService.get();
         if (s != null) s.refreshNotification();
         refreshStatus();
@@ -1003,28 +1066,57 @@ public class MainActivity extends Activity implements Store.Listener {
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         boolean svcOn = enabled != null
                 && enabled.contains(getPackageName() + "/com.bridge.mx.MxService");
-        String svc = live ? "live" : (svcOn ? "enabled-idle" : "OFF");
+        boolean loggedIn = MalClient.hasSession(this);
+        int rows = Store.all().size();
         int planned = 0;
         for (Store.Row r : Store.all()) {
             if (!r.planStatus.isEmpty()) planned++;
         }
+        boolean auto = Store.autoApply();
+
+        // Headline: the one thing the user should know, in plain words.
+        String head;
+        if (!live && !svcOn) {
+            head = "\u26A0  Turn on the accessibility service";
+        } else if (!loggedIn) {
+            head = "\u26A0  Sign in to MyAnimeList";
+        } else if (planned > 0 && !auto) {
+            head = planned + (planned == 1 ? " change is ready" : " changes are ready");
+        } else {
+            head = "All set";
+        }
+        statusHead.setText(head);
+
+        statusLine.setText(rows + (rows == 1 ? " episode tracked" : " episodes tracked")
+                + (planned > 0 ? "  \u00B7  " + planned + " ready to send" : ""));
+
+        if (auto) {
+            statusAuto.setText("Auto-update is ON \u2014 new watches are written to "
+                    + "MyAnimeList automatically.");
+            statusAuto.setTextColor(0xFF1B5E20);
+        } else {
+            statusAuto.setText("Auto-update is OFF \u2014 nothing is written until you "
+                    + "tap \u201CApply to MAL\u201D.");
+            statusAuto.setTextColor(0xFF8A6D00);
+        }
+
+        // Raw numbers, small and dim, for anyone who wants them.
         String sync = "";
         MxService s = MxService.get();
         if (s != null) {
             long in = s.nextRunInMs();
-            if (in > 0) sync = " | sync in " + ((in + 59_000) / 60_000) + "m";
+            if (in > 0) sync = " | next auto-sync " + ((in + 59_000) / 60_000) + "m";
         }
-        status.setText("rows " + Store.all().size()
-                + " | service " + svc
-                + " | MAL " + (MalClient.hasSession(this) ? "in" : "out")
-                + " | planned " + planned
-                + " | auto " + (Store.autoApply() ? "ON" : "off")
+        statusDetails.setText("service " + (live ? "live" : (svcOn ? "enabled-idle" : "off"))
+                + " | MAL " + (loggedIn ? "signed in" : "signed out")
                 + " | ai " + LlmBrain.get(this).status()
                 + " | " + Retention.statusLine()
                 + " | " + Catalogue.ageLine(this)
                 + " | " + Selftest.statusLine(this)
                 + sync);
-        btnAuto.setText(Store.autoApply() ? "Auto\u2713" : "Auto");
+
+        btnApply.setText(planned > 0 ? "Apply to MAL (" + planned + ")" : "Apply to MAL");
+        btnAuto.setText(auto ? "Auto: ON" : "Auto: OFF");
     }
 
     private String safeReportPath() {
@@ -1047,6 +1139,16 @@ public class MainActivity extends Activity implements Store.Listener {
             logView.append(s + "\n");
             logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         });
+    }
+
+    /** Friendly wording for the internal row states. */
+    private static String stateWord(String state) {
+        if ("finished".equals(state)) return "Watched";
+        if ("watching".equals(state)) return "Watching";
+        if ("new".equals(state)) return "Not watched yet";
+        if ("present".equals(state)) return "On device";
+        if ("none".equals(state)) return "On device (no label)";
+        return "Not classified yet";
     }
 
     private static String shortName(String s) {
@@ -1118,27 +1220,32 @@ public class MainActivity extends Activity implements Store.Listener {
 
             Store.Row r = Store.all().get(position);
             if (!r.parsedTitle.isEmpty()) {
-                h.title.setText(r.parsedTitle + (r.ep > 0 ? " · ep " + r.ep : ""));
+                h.title.setText(r.parsedTitle + (r.ep > 0 ? "  \u00B7  episode " + r.ep : ""));
             } else {
                 h.title.setText(r.title);
             }
-            StringBuilder meta = new StringBuilder(r.state);
-            if (r.ep > 0) meta.append(" | ep ").append(r.ep);
-            if (!r.duration.isEmpty()) meta.append(" | ").append(r.duration);
-            // The two observers, shown side by side: the sampler's percent and
-            // the list reader's "last played" date.
-            if (r.watchedPct >= 0) meta.append(" | ").append(r.watchedPct).append("%");
-            if (!r.playedAt.isEmpty()) meta.append(" | ").append(r.playedAt);
+            StringBuilder meta = new StringBuilder(stateWord(r.state));
+            if (!r.duration.isEmpty()) meta.append("  \u00B7  ").append(r.duration);
+            if (r.watchedPct >= 0) meta.append("  \u00B7  ").append(r.watchedPct).append("% played");
+            if (!r.playedAt.isEmpty()) meta.append("  \u00B7  ").append(r.playedAt);
             if (r.matchId > 0) {
-                meta.append("\nMAL: ").append(r.matchTitle);
+                meta.append("\nMyAnimeList: ").append(r.matchTitle);
                 if (r.numEp > 0) meta.append(" (").append(r.numEp).append(" eps)");
+            } else if (!r.parsedTitle.isEmpty()) {
+                meta.append("\nMyAnimeList: not matched yet");
             }
-            meta.append("\n").append(r.title);
+            // The raw filename last, so unusual (e.g. Arabic) names do not
+            // dominate the row.
+            if (!r.title.equals(h.title.getText().toString())) {
+                meta.append("\n").append(r.title);
+            }
             h.meta.setText(meta.toString());
 
             if (!r.planText.isEmpty()) {
                 h.plan.setVisibility(View.VISIBLE);
-                h.plan.setText(r.planText);
+                String pt = r.planText;
+                if (pt.startsWith("\u2192 ")) pt = "Will send to MAL: " + pt.substring(2);
+                h.plan.setText(pt);
             } else {
                 h.plan.setVisibility(View.GONE);
             }
