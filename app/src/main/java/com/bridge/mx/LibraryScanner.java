@@ -32,11 +32,12 @@ import java.util.regex.Pattern;
  * The scan is scoped to built-in ("primary") storage: the removable SD card is
  * ignored on purpose.
  *
- * <p>It is additionally scoped to the Download tree. Only videos that live
- * under {@code /storage/emulated/0/Download} or {@code /storage/emulated/0/Downloads}
- * (the whole tree, so sub-folders such as {@code Download/2- Anime/...} are
- * included) are considered; any video stored anywhere else on the device is
- * ignored, so this bridge only ever reflects the user's downloaded library.
+ * <p>It is additionally scoped to the ROOT of the Download tree. Only videos
+ * that live directly under {@code /storage/emulated/0/Download} (or the
+ * {@code Downloads} spelling) count; a file filed away in a sub-folder such as
+ * {@code Download/2- Anime/...} or a per-series batch folder is ignored. That
+ * keeps batch-downloaded, not-yet-watched collections from being written to
+ * MAL as watched (2026-10-14).
  */
 public class LibraryScanner {
 
@@ -116,21 +117,41 @@ public class LibraryScanner {
         if (p == null) return false; // present column but no path: be strict
         if (Build.VERSION.SDK_INT >= 29) {
             // p = "/Download/…" on primary volume.
-            return isDownloadTree(p, "");
+            return isDownloadRoot(p, "");
         }
         String base = Environment.getExternalStorageDirectory().getAbsolutePath().toLowerCase(Locale.ROOT);
-        return isDownloadTree(p, base);
+        return isDownloadRoot(p, base);
     }
 
     /**
-     * True when {@code lowerPath} begins with {@code baseLower} + "/download/"
-     * or "/downloads/". For the API 29+ {@code RELATIVE_PATH} form pass an empty
-     * base (the path already starts with "/Download/…").
+     * True when the row sits DIRECTLY in a Download folder — the root of the
+     * Download tree, never inside a sub-folder (2026-10-14).
+     *
+     * <p>The previous whole-tree rule admitted batch downloads kept in
+     * per-series sub-folders (e.g. {@code Download/Youjo Shenki 2 [1080p]/…})
+     * that were only downloaded, never watched. The planner then read mere file
+     * presence as "reached" and wrote the episode counts to MAL, so an
+     * unwatched ONA batch appeared at "watching 11". Only files the user drops
+     * straight into {@code Download} are the live download set now; anything
+     * filed away under a sub-folder is out of scope.
+     *
+     * <p>On API 29+ the column is {@code RELATIVE_PATH}, the containing folder
+     * with a trailing slash ({@code "Download/"} for the root, {@code
+     * "Download/sub/"} for a sub-folder). On older releases it is the absolute
+     * file path ({@code "…/Download/name.mkv"}).
      */
-    static boolean isDownloadTree(String lowerPath, String baseLower) {
+    static boolean isDownloadRoot(String lowerPath, String baseLower) {
         if (lowerPath == null) return false;
-        return lowerPath.startsWith(baseLower + "/download/")
-                || lowerPath.startsWith(baseLower + "/downloads/");
+        for (String folder : new String[]{"/download", "/downloads"}) {
+            String prefix = baseLower + folder;
+            if (lowerPath.equals(prefix)) return true;         // the folder itself
+            if (lowerPath.startsWith(prefix + "/")) {
+                // Root means nothing but the file name (legacy absolute path) or
+                // nothing at all (API 29+ RELATIVE_PATH already ends at the dir).
+                return lowerPath.indexOf('/', prefix.length() + 1) < 0;
+            }
+        }
+        return false;
     }
 
     /**

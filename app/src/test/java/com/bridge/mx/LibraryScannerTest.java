@@ -68,26 +68,40 @@ public class LibraryScannerTest {
     }
 
     // ---------------------------------------------------------- folder scope
+    //
+    // Root-only (2026-10-14): only files sitting DIRECTLY in a Download folder
+    // count. A batch filed under a sub-folder (Download/<Series>/...) is out of
+    // scope, so an unwatched batch can never be written to MAL as watched.
 
     @Test
-    public void modernRelativePathAcceptsBothFolderNames() {
-        assertTrue(LibraryScanner.isDownloadTree("/download/video/x.mkv", ""));
-        assertTrue(LibraryScanner.isDownloadTree("/downloads/video/x.mkv", ""));
-        assertTrue(LibraryScanner.isDownloadTree("/download/x.mkv", ""));
+    public void modernRelativePathAcceptsTheDownloadRoot() {
+        // API 29+ RELATIVE_PATH is the containing directory, trailing slash.
+        assertTrue(LibraryScanner.isDownloadRoot("/download/", ""));
+        assertTrue(LibraryScanner.isDownloadRoot("/downloads/", ""));
     }
 
     @Test
-    public void modernRelativePathRejectsOtherTrees() {
-        assertFalse(LibraryScanner.isDownloadTree("/movies/x.mkv", ""));
-        assertFalse(LibraryScanner.isDownloadTree("/other/download/x.mkv", ""));
-        assertFalse(LibraryScanner.isDownloadTree("/dcim/downloaded/x.mkv", ""));
+    public void modernRelativePathRejectsSubFoldersAndOtherTrees() {
+        assertFalse(LibraryScanner.isDownloadRoot("/download/video/", ""));
+        assertFalse(LibraryScanner.isDownloadRoot("/download/Youjo Shenki 2 [1080p][Rhythm]/", ""));
+        assertFalse(LibraryScanner.isDownloadRoot("/downloads/sub/", ""));
+        assertFalse(LibraryScanner.isDownloadRoot("/movies/", ""));
+        assertFalse(LibraryScanner.isDownloadRoot("/other/download/", ""));
+        assertFalse(LibraryScanner.isDownloadRoot("/dcim/downloaded/", ""));
     }
 
     @Test
-    public void legacyAbsolutePathAcceptsBothFolderNames() {
+    public void legacyAbsolutePathAcceptsRootFilesOnly() {
         String base = "/storage/emulated/0";
-        assertTrue(LibraryScanner.isDownloadTree(base + "/download/x.mkv", base));
-        assertTrue(LibraryScanner.isDownloadTree(base + "/downloads/x.mkv", base));
-        assertFalse(LibraryScanner.isDownloadTree(base + "/pictures/x.mkv", base));
+        assertTrue(LibraryScanner.isDownloadRoot(base + "/download/x.mkv", base));
+        assertTrue(LibraryScanner.isDownloadRoot(base + "/downloads/x.mkv", base));
+        // A sub-folder file is rejected.
+        assertFalse(LibraryScanner.isDownloadRoot(base + "/download/Youjo Shenki 2 [1080p][Rhythm]/x.mkv", base));
+        assertFalse(LibraryScanner.isDownloadRoot(base + "/pictures/x.mkv", base));
+    }
+
+    @Test
+    public void nullPathIsRejected() {
+        assertFalse(LibraryScanner.isDownloadRoot(null, ""));
     }
 }

@@ -127,12 +127,25 @@ public class Store {
         return n;
     }
 
-    /** Remove library rows (key prefix "lib:") not seen in the latest scan. */
+    /**
+     * Remove library rows (key prefix "lib:") not seen in the latest scan.
+     *
+     * <p>A row whose write we already pushed to MAL is NOT dropped until that
+     * write has been withdrawn: removing it would lose the {@code matchId} and
+     * leave the bogus progress on MAL forever. MalRepair withdraws it and sets
+     * {@code applied = "plan_to_watch|0"}, and the next scan then sweeps it.
+     * This matters when the scan scope shrinks (e.g. the 2026-10-14 move to the
+     * Download root), which drops batch folders that were previously pushed.
+     */
     public static synchronized void sweepLib(Set<String> keep) {
         Iterator<Map.Entry<String, Row>> it = rows.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<String, Row> e = it.next();
-            if (e.getValue().fromLib && !keep.contains(e.getKey())) it.remove();
+            Row r = e.getValue();
+            if (!r.fromLib || keep.contains(e.getKey())) continue;
+            String ap = r.applied;
+            if (ap != null && !ap.isEmpty() && !"plan_to_watch|0".equals(ap)) continue;
+            it.remove();
         }
     }
 

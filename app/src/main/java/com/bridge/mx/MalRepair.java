@@ -23,15 +23,22 @@ import java.util.TreeMap;
  * no playback" — proved to be a FALSE signature. The grey ink is MX's real
  * <em>finished</em> tag on 3.3.1, and the user confirmed all 18 such reverts
  * were genuine watches. A row that carries a real tag
- * ({@link ColorClassify#hasTag}) is therefore never an artifact; the repair now
- * only looks at pushed rows with NO tag ink and no playback/ledger evidence.
+ * ({@link ColorClassify#hasTag}) is therefore never an artifact.
+ *
+ * <p>IMPORTANT (2026-10-14): the follow-on trigger — "pushed + untagged ink +
+ * no playback" — was ALSO a false signature. Six rows it withdrew (Gensou
+ * Suikoden, FX Senshi Kurumi-chan, Tsuihou sareta Tensei Juukishi, Hotaru no
+ * Yomeiri, Sora wa Akai Kawa no Hotori, Shuiro no Kamen) were all shows the
+ * user was actively watching; MX simply paints no tag on a row it is mid-way
+ * through. The repair is therefore narrowed to its one PROVEN fabrication:
+ * a {@code fromLib} row — one the MX list reader never saw, whose only claim
+ * to progress was file presence (the "downloaded is not watched" case).
  *
  * <ul>
  *   <li>Only series whose rows are STILL the artifact signature qualify:
- *       pushed ({@code applied != ""}), with NO real tag
- *       ({@code !ColorClassify.hasTag(rgb)}), with no playback evidence
- *       (row watched %, watched ledger) — a real tag or any playback rules
- *       them out.
+ *       pushed ({@code applied != ""}), library-only ({@code fromLib}), with
+ *       no playback evidence (row watched %, watched ledger, real tag or a
+ *       last-played date). An MX-observed row is never a candidate.
  *   <li>A write is withdrawn only when MAL currently holds EXACTLY what we
  *       pushed (same status and episode count) and the entry has no user
  *       score ({@code score == 0}). Anything the user rated or has since
@@ -113,15 +120,20 @@ public final class MalRepair {
     }
 
     /**
-     * Is this row the artifact signature? Pushed, with NO real MX tag (the
-     * dark-indigo "no label" ink or an unknown colour), and no playback
-     * evidence on the row itself. A grey (finished) or blue (played) row is
-     * genuine and never qualifies.
+     * Is this row the artifact signature? Pushed, a library-only row
+     * ({@code fromLib}: never seen by the MX list reader), with no playback
+     * evidence on the row itself.
+     *
+     * <p>An MX-observed row ({@code !fromLib}) is NEVER an artifact: the MX
+     * list is the user's own playing record, and an untagged ink simply means
+     * MX painted no label — not that the watch is fake (2026-10-14, after six
+     * actively-watched shows were wrongly withdrawn). Real evidence (a grey
+     * finished tag, blue played ink, a last-played date, playback %, or the
+     * watched ledger) also rules a row out.
      *
      * <p>Note this is row-level evidence; {@link #candidates} additionally
-     * drops an id when a SIBLING row of the same series carries evidence
-     * (played, tagged, or in the watched ledger) — such a series is genuinely
-     * being watched and its MAL entry must never be withdrawn.
+     * drops an id when a SIBLING row of the same series carries evidence —
+     * such a series is genuinely being watched and must never be withdrawn.
      *
      * @param ledger the watched-ledger snapshot ({@code "norm title|ep" -> pct})
      */
@@ -130,18 +142,32 @@ public final class MalRepair {
         if (r.applied == null || r.applied.isEmpty()) return false;
         if ("plan_to_watch|0".equals(r.applied)) return false;
         if (r.watchedPct >= 0) return false;                        // real playback
-        if (r.rgb == -1) return false;                              // never sampled
         if (ColorClassify.hasTag(r.rgb)) return false;              // real tag -> genuine
+        if (r.playedAt != null && !r.playedAt.isEmpty()) return false; // MX last-played
         if (matchesLedger(ledger, r.parsedTitle) || matchesLedger(ledger, r.matchTitle)) {
             return false;                                           // watched ledger has it
         }
-        return true;
+        // ONLY a library-only row (fromLib) can be an artifact: the MX list
+        // reader never saw it, so its only claim to progress was file presence.
+        // Under the "downloaded is not watched" rule (2026-10-14) any watch
+        // progress we pushed from it is bogus.
+        //
+        // An MX-observed row is TRUSTED, whatever its ink. The MX list is the
+        // user's own playing record: on 2026-10-14 the user confirmed six
+        // "untagged ink" rows the repair had withdrawn (Gensou Suikoden,
+        // FX Senshi Kurumi-chan, Tsuihou…, Hotaru no Yomeiri, Sora wa Akai
+        // Kawa no Hotori, Shuiro no Kamen) were all shows they were actively
+        // watching. MX paints no tag for a row it is mid-way through, so an
+        // untagged MX row is NOT evidence of a bogus push. Never revert one.
+        return r.fromLib;
     }
 
-    /** Any positive watch evidence on one row: playback, a real tag, or the ledger. */
+    /** Any positive watch evidence on one row: playback, a real tag, a
+     *  last-played date, or the watched ledger. */
     static boolean evidence(Store.Row o, Map<String, Integer> ledger) {
         if (o.watchedPct >= 0) return true;
         if (o.rgb != -1 && ColorClassify.hasTag(o.rgb)) return true;
+        if (o.playedAt != null && !o.playedAt.isEmpty()) return true;
         if (matchesLedger(ledger, o.parsedTitle) || matchesLedger(ledger, o.matchTitle)) {
             return true;
         }
@@ -151,6 +177,14 @@ public final class MalRepair {
     static boolean seriesHasEvidence(List<Store.Row> rows, int matchId, Map<String, Integer> ledger) {
         for (Store.Row r : rows) {
             if (r.matchId == matchId && evidence(r, ledger)) return true;
+        }
+        return false;
+    }
+
+    /** True when any row of the series still carries the artifact signature. */
+    static boolean hasArtifactRow(List<Store.Row> rows, int matchId, Map<String, Integer> ledger) {
+        for (Store.Row r : rows) {
+            if (r.matchId == matchId && isArtifact(r, ledger)) return true;
         }
         return false;
     }
@@ -238,11 +272,19 @@ public final class MalRepair {
             // Self-heal: a series we withdrew earlier that now shows real
             // evidence (the user watched it, or tagged it) is un-shielded and
             // its rows restored, so the bridge serves it normally again.
+            //
+            // A shield is ALSO stale once the series no longer matches the
+            // artifact signature at all — e.g. the 2026-10-14 rows behind
+            // shields that were only ever MX-observed, which the narrowed rule
+            // (library-only) no longer considers artifacts. Dropping those lets
+            // the shows track normally again.
             for (String k : new ArrayList<>(p.getAll().keySet())) {
                 if (!k.startsWith("r:")) continue;
                 try {
                     int id = Integer.parseInt(k.substring(2));
-                    if (seriesHasEvidence(rows, id, ledger)) unshield(c, id);
+                    if (seriesHasEvidence(rows, id, ledger) || !hasArtifactRow(rows, id, ledger)) {
+                        unshield(c, id);
+                    }
                 } catch (NumberFormatException ignored) {
                 }
             }
@@ -258,6 +300,8 @@ public final class MalRepair {
         for (int id : ids) {
             String pushed = pushedApplied(rows, id);
             Action a = decide(cur.get(id), pushed);
+            Report.info("malrepair", "candidate " + id + " pushed=" + pushed
+                    + " mal=" + cur.get(id) + " -> " + a);
             switch (a) {
                 case REVERT:
                     if (!dry) revert(c, id, pushed);

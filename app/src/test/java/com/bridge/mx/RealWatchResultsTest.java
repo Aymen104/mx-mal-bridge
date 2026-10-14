@@ -23,6 +23,11 @@ import org.junit.Test;
  * <p>So each of the "watching"/"present" rows below is credited N-1 (or 0 for
  * episode 1), and the same rows with state "finished" are credited N — which is
  * exactly the switch the reliable tracker is meant to flip.
+ *
+ * <p><b>Update 2026-10-14:</b> a row whose only signal is "present" is no longer
+ * credited at all. Downloading is not watching: the seven episodes really were
+ * watched (the user reported them), so they surface as "watching" (or with a
+ * ledger percent); a merely downloaded copy must never fabricate progress.
  */
 public class RealWatchResultsTest {
 
@@ -98,16 +103,16 @@ public class RealWatchResultsTest {
     }
 
     @Test
-    public void presentRowsAreAlsoCreditedOneLess() {
+    public void presentRowsAreNotCreditedAtAll() {
+        // A file only on disk carries no watch evidence: under the rule of
+        // 2026-10-14 it is planned, never watched, so it credits NOTHING.
         insertTheSeven("present");
         Planner.rebuild();
-        assertEquals(1, planEps(61323));
-        assertEquals(1, planEps(63753));
-        assertEquals(1, planEps(62590));
-        assertEquals(1, planEps(63751));
-        assertEquals(1, planEps(62907));
-        assertEquals(0, planEps(64503));
-        assertEquals(1, planEps(62753));
+        int[] ids = {61323, 63753, 62590, 63751, 62907, 64503, 62753};
+        for (int id : ids) {
+            assertEquals("id " + id, 0, planEps(id));
+            assertEquals("id " + id, "plan_to_watch", planStatus(id));
+        }
     }
 
     /** The gap in one line: every one of the seven came out exactly N-1. */

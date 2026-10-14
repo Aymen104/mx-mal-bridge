@@ -14,9 +14,13 @@ import java.util.Map;
  * <pre>
  *   finished (gray tag) -> episode watched to end (95%+ playback)  -> N watched
  *   watching (last played) -> episode reached, in progress         -> N-1 watched
- *   present (downloaded) -> file exists, user has it               -> N-1 watched
+ *   present (downloaded) -> file exists, NO play evidence          -> 0 watched
  *   new (NEW badge)       -> never opened                          -> 0 watched
  * </pre>
+ *
+ * <p>Only genuine play evidence advances progress. Merely having a downloaded
+ * file ("present") is NOT watch evidence: a batch the user has not started is
+ * "planned", never "watching N" (2026-10-14).
  *
  * <p><b>Two independent observers, one per-episode truth.</b> The MX list
  * reader and the playback sampler watch the same playback from two angles and
@@ -35,21 +39,22 @@ import java.util.Map;
  * <p>The relation, resolved strongest-evidence-first: a grey "finished" tag or
  * a ledger percent &ge; {@link PlaybackTracker#FINISH_PCT} makes the episode
  * itself watched (N); a last-played date or any ledger percent &gt; 0 makes it
- * "reached" (N-1); a file only on disk is "present" (N-1); a NEW badge with no
- * play evidence is nothing (0). The list answers "was it touched?" when the
- * sampler was silent, and the sampler answers "how far?" when the list is
- * blank — neither alone is complete.
+ * "reached" (N-1); a file only on disk is "present" (0 — downloaded is not
+ * watched); a NEW badge with no play evidence is nothing (0). The list answers
+ * "was it touched?" when the sampler was silent, and the sampler answers "how
+ * far?" when the list is blank — neither alone is complete.
  *
  * <p>The series progress is the MAXIMUM over its unique episodes: reaching
- * episode N (present/watching) means the user watched through N-1, so ep N
- * contributes N-1; a finished episode N contributes N. No "highest episode =
- * all previous watched" assumption; a lower finished episode never inflates a
- * higher downloaded-but-unplayed one.
+ * episode N (watching) means the user watched through N-1, so ep N contributes
+ * N-1; a finished episode N contributes N; a merely downloaded (present) or
+ * never-opened (new) episode contributes 0. No "highest episode = all previous
+ * watched" assumption; a lower finished episode never inflates a higher
+ * downloaded-but-unplayed one.
  *
  * <p>A series is "completed" ONLY when the FINAL episode (MAL total when
  * known) carries the "finished" tag. A downloaded final episode without the
- * finished tag keeps the series "watching" at N-1, and when the total is
- * unknown the series is never auto-completed.
+ * finished tag is not progress at all, and when the total is unknown the series
+ * is never auto-completed.
  *
  * <p>Rows are grouped by matched MAL id, so a multi-episode series produces
  * ONE write, carried by the row that achieved the highest progress (ties go to
@@ -100,8 +105,8 @@ public class Planner {
             int malTotal = 0;            // MAL total episodes (0 = unknown/airing)
             int groupMaxEp = 0;          // highest episode number seen in MX
             int series = 0;              // max per-episode contribution
-            boolean reachedAny = false;  // any finished/watching/present evidence
-            boolean onlyNew = false;     // evidence exists but is only "new"
+            boolean reachedAny = false;  // any finished/watching (real play) evidence
+            boolean onlyNew = false;     // evidence is only "new"/"present" (no play)
             boolean finalFinished = false; // the final episode carries "finished"
             Store.Row rep = null;
             int repContrib = -1;
@@ -127,10 +132,11 @@ public class Planner {
                 String state = fuseState(r.state, r.playedAt, r.watchedPct);
                 int contrib = episodeValue(state, ef);
                 if (contrib > series) series = contrib;
-                if ("finished".equals(state) || "watching".equals(state)
-                        || "present".equals(state)) {
+                if ("finished".equals(state) || "watching".equals(state)) {
                     reachedAny = true;
-                } else if ("new".equals(state)) {
+                } else if ("new".equals(state) || "present".equals(state)) {
+                    // present = on disk only; like a NEW badge it carries no
+                    // watch evidence, so the best it can mean is "planned".
                     onlyNew = true;
                 }
                 // Carrier row = the one that achieved the highest progress;
@@ -257,8 +263,13 @@ public class Planner {
 
     /**
      * Per-episode watched contribution:
-     * finished -> the episode itself; watching/present -> the episode BEFORE it
-     * (reached but not finished); new/unknown/none -> nothing.
+     * finished -> the episode itself; watching -> the episode BEFORE it
+     * (reached but not finished); present/new/unknown/none -> nothing.
+     *
+     * <p>"present" (a file on disk that MX never showed played) is NOT watch
+     * evidence: downloading an episode is not watching it. A batch download the
+     * user has not started must never be credited as reached (2026-10-14 — an
+     * unwatched ONA batch was written as "watching 11" under the old ep-1 rule).
      */
     /**
      * The episode index to trust for progress. Returns 0 (no episode) when the
@@ -303,7 +314,7 @@ public class Planner {
     /** Package-private so the scoring rule is unit-testable on the plain JVM. */
     static int episodeValue(String state, int ep) {
         if ("finished".equals(state)) return ep;
-        if ("watching".equals(state) || "present".equals(state)) return ep - 1;
+        if ("watching".equals(state)) return ep - 1;
         return 0;
     }
 

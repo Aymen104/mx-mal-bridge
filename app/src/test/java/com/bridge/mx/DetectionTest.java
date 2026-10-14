@@ -151,15 +151,18 @@ public class DetectionTest {
 
     /**
      * Documents the conservative rule that produced the device results: a file
-     * the user has ("present") or has started ("watching") credits N-1, so an
-     * episode the user watched counts as the one before it whenever the live
-     * playback ledger has no entry for it. This is exactly the off-by-one the
-     * seven real watches exposed (they all had an empty ledger).
+     * the user has STARTED ("watching") credits N-1, so an episode the user
+     * watched counts as the one before it whenever the live playback ledger has
+     * no entry for it. This is exactly the off-by-one the seven real watches
+     * exposed (they all had an empty ledger).
+     *
+     * <p>A file merely on disk ("present") is no longer credited at all
+     * (2026-10-14): downloading an episode is not watching it.
      */
     @Test
     public void uncapturedWatchIsCreditedAsThePreviousEpisode() {
         assertEquals(1, Planner.episodeValue("watching", 2));
-        assertEquals(1, Planner.episodeValue("present", 2));
+        assertEquals(0, Planner.episodeValue("present", 2));
         assertEquals(0, Planner.episodeValue("present", 1));
     }
 }

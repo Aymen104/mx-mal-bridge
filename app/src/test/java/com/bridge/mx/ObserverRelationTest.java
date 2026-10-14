@@ -51,8 +51,10 @@ public class ObserverRelationTest {
     }
 
     @Test
-    public void fileOnDiskAloneIsReached() {
-        assertEquals(4, value("present", "", -1, 5));
+    public void fileOnDiskAloneIsNotWatched() {
+        // A downloaded file with no play evidence is not progress (2026-10-14):
+        // it must never be credited as a reached episode.
+        assertEquals(0, value("present", "", -1, 5));
     }
 
     @Test

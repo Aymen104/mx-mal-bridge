@@ -212,9 +212,9 @@ public class PlannerTest {
     }
 
     @Test
-    public void downloadedEpisodesAreWatchedProgress() {
-        // Files on disk mean the user reached episode 5 but has not finished it,
-        // so the episode before (4) is the last one actually watched.
+    public void downloadedEpisodesPlanToWatchWithoutWatching() {
+        // Files on disk alone carry no watch evidence (2026-10-14): a batch that
+        // is only downloaded becomes "plan to watch", never "watching N".
         Store.Row e1 = row("lib-1", "Lib Show EP 01", "present", 12);
         Store.Row e5 = row("lib-5", "Lib Show EP 05", "present", 12);
         int id = 9100;
@@ -230,19 +230,45 @@ public class PlannerTest {
             }
         }
         assertEquals(1, planned);
-        assertEquals("watching", carrier.planStatus);
-        assertEquals(4, carrier.planEps); // reached episode 5, not finished
+        assertEquals("plan_to_watch", carrier.planStatus);
+        assertEquals(0, carrier.planEps);
+    }
+
+    @Test
+    public void libraryOnlyBatchIsNeverWrittenAsWatched() {
+        // The device bug (2026-10-14): a full 12-episode ONA batch sat on disk
+        // under a Download sub-folder, kept only by the MediaStore scan (fromLib,
+        // no ink, no playback). The old ep-1 rule wrote "watching 11". Downloaded
+        // is not watched: it must be planned only and never completed.
+        int id = 9400;
+        int[] eps = {1, 6, 12};
+        for (int ep : eps) {
+            Store.Row r = row("lib-ona-" + ep,
+                    "Youjo Shenki 2 EP " + String.format("%02d", ep), "present", 12);
+            r.matchId = id;
+            r.fromLib = true; // only ever known from the MediaStore scan
+        }
+        Planner.rebuild();
+        int planned = 0;
+        for (Store.Row r : Store.all()) {
+            if (r.matchId != id || r.planStatus.isEmpty()) continue;
+            planned++;
+            assertEquals("plan_to_watch", r.planStatus);
+            assertEquals(0, r.planEps);
+        }
+        assertEquals(1, planned);
     }
 
     @Test
     public void downloadedLastEpisodeDoesNotCompleteWithoutFinishedTag() {
-        // The final episode is on disk but carries no "finished" tag, so the
-        // series is NOT completed: the episode before it is the last watched.
+        // The final episode is on disk but carries no "finished" tag: there is
+        // no watch evidence at all, so the series is neither completed nor even
+        // started — it is only planned (2026-10-14).
         Store.Row e9 = row("lib-cap", "Capped Show EP 09", "present", 6);
         e9.matchId = 9101;
         Planner.rebuild();
-        assertEquals("watching", e9.planStatus);
-        assertEquals(8, e9.planEps); // reached 9, not finished
+        assertEquals("plan_to_watch", e9.planStatus);
+        assertEquals(0, e9.planEps);
     }
 
     @Test
@@ -259,34 +285,34 @@ public class PlannerTest {
     }
 
     @Test
-    public void downloadedLastEpisodeWithoutFinishedStaysWatching() {
+    public void presentFinalEpisodeDoesNotAdvancePastLastWatched() {
         // All 12 files present, highest is the last one, but none carries the
-        // "finished" tag -> the series is NOT completed (11 watched), and the
-        // highest-reached row carries the plan.
+        // "finished" tag and only ep 5 was actually started -> progress is ep 5
+        // (watching 4). The downloaded ep 12 does not inflate it (2026-10-14).
         Store.Row lib = row("lib-mid", "Mid Show EP 12", "present", 12);
         Store.Row play = row("mx-mid", "Mid Show EP 05", "watching", 12);
         lib.matchId = 9201;
         play.matchId = 9201;
         Planner.rebuild();
-        assertEquals("watching", lib.planStatus);
-        assertEquals(11, lib.planEps);
-        assertEquals("", play.planStatus); // ep 5 is not the carrier
+        assertEquals("watching", play.planStatus);
+        assertEquals(4, play.planEps);
+        assertEquals("", lib.planStatus); // the downloaded ep 12 is not the carrier
     }
 
     @Test
-    public void presentAiringCountsReachedEpisode() {
-        // num_episodes == 0 (still airing) and ep 3 is on disk, not finished ->
-        // watching 2.
+    public void presentAiringDoesNotCountAsReached() {
+        // num_episodes == 0 (still airing) and ep 3 is on disk, not finished:
+        // no watch evidence -> planned only.
         Store.Row e3 = row("lib-air", "Airing Show EP 03", "present", 0);
         e3.matchId = 9102;
         Planner.rebuild();
-        assertEquals("watching", e3.planStatus);
-        assertEquals(2, e3.planEps);
+        assertEquals("plan_to_watch", e3.planStatus);
+        assertEquals(0, e3.planEps);
     }
 
     @Test
-    public void firstEpisodeWatchingOrPresentIsZeroWatched() {
-        // A single episode 01 file that is merely reached (watching/present) means
+    public void firstEpisodeWatchingIsZeroWatched() {
+        // A single episode 01 file that was merely opened (watching) means
         // NOTHING has been watched yet: N-1 = 0. Must stay "watching, 0".
         Store.Row w = row("zero-w", "Zero Show EP 01", "watching", 12);
         Planner.rebuild();
@@ -295,18 +321,19 @@ public class PlannerTest {
     }
 
     @Test
-    public void lowerFinishedNeverInflatesHigherUnplayedEpisode() {
-        // EP 05 was finished (5 watched) but EP 07 is only present (reached):
-        // the series is at 6, not at 7 and not at 5+1=6 via unique counting.
+    public void finishedEpisodeDrivesProgressOverHigherDownloaded() {
+        // EP 05 was finished (5 watched) but EP 07 is only present (downloaded,
+        // not watched): the series is at 5, not 6 or 7 — a downloaded episode
+        // adds no progress (2026-10-14).
         Store.Row f5 = row("mix-5", "Mix Show EP 05", "finished", 12);
         Store.Row p7 = row("mix-7", "Mix Show EP 07", "present", 12);
         int id = 9300;
         f5.matchId = id;
         p7.matchId = id;
         Planner.rebuild();
-        assertEquals("watching", p7.planStatus);
-        assertEquals(6, p7.planEps);
-        assertEquals("", f5.planStatus);
+        assertEquals("watching", f5.planStatus);
+        assertEquals(5, f5.planEps);
+        assertEquals("", p7.planStatus);
     }
 
     @Test
