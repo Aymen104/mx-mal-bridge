@@ -92,4 +92,30 @@ public class EpisodeParserTest {
         assertEquals(-1, p.ep);
         assertEquals("Some Show", p.title);
     }
+
+    // ------------------------------------------------- release-style names
+
+    @Test
+    public void releaseStyleWithBracketedNoise() {
+        EpisodeParser.Parsed p = EpisodeParser.parse(
+                "Shikkoku no Shaga The Animation - 01 [1080p-HEVC][hstream.moe][v2].mkv");
+        assertEquals(1, p.ep);
+        assertEquals("Shikkoku no Shaga The Animation", p.title);
+    }
+
+    @Test
+    public void releaseStyleFinalEndIsTheEpisodeNumber() {
+        EpisodeParser.Parsed p = EpisodeParser.parse(
+                "[Rhythm] Youjo Shenki 2 - 12 END [1080p AAC][6D7DF97C].mkv");
+        assertEquals(12, p.ep);
+        assertEquals("Youjo Shenki 2", p.title);
+    }
+
+    @Test
+    public void releaseStyleEndWithBdTags() {
+        EpisodeParser.Parsed p = EpisodeParser.parse(
+                "[Rhythm] Youjo Shenki - 12 END [BD 1080p Hi10p FLAC][1DD524AE].mkv");
+        assertEquals(12, p.ep);
+        assertEquals("Youjo Shenki", p.title);
+    }
 }

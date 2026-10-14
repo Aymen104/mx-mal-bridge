@@ -24,25 +24,46 @@ import java.util.regex.Pattern;
  * background tick needs.
  *
  * Only files whose name carries an explicit episode marker are taken
- * (Arabic "الحلقة N", "EP N", "Episode N" or "SxxExx"). Music videos, openings,
- * clips, Quran recitations and other noise in the Download folder are ignored
- * so they can never be matched to an anime and pushed to MAL.
+ * (Arabic "الحلقة N", "EP N", "Episode N", "SxxExx", or the release style
+ * "Show - 03"). Music videos, openings, clips, Quran recitations and other
+ * noise in the Download folder are ignored so they can never be matched to an
+ * anime and pushed to MAL.
  *
  * The scan is scoped to built-in ("primary") storage: the removable SD card is
  * ignored on purpose.
  *
- * <p>It is additionally scoped to the Download folder. Only videos that live
- * under {@code /storage/emulated/0/Download} (the tree, so sub-folders such as
- * {@code Download/2- Anime/...} are included) are considered; any video stored
- * anywhere else on the device is ignored, so this bridge only ever reflects the
- * user's downloaded library.
+ * <p>It is additionally scoped to the Download tree. Only videos that live
+ * under {@code /storage/emulated/0/Download} or {@code /storage/emulated/0/Downloads}
+ * (the whole tree, so sub-folders such as {@code Download/2- Anime/...} are
+ * included) are considered; any video stored anywhere else on the device is
+ * ignored, so this bridge only ever reflects the user's downloaded library.
  */
 public class LibraryScanner {
+
+    /**
+     * Release-style episode marker: a hyphen or underscore acting as the
+     * "episode slot" separator, e.g. {@code "Shikkoku no Shaga - 01 [1080p]"},
+     * {@code "Youjo Shenki - 12 END"} or {@code "Show - 03.mkv"}. Unlike a bare
+     * " - NN", the number must sit in the episode slot: after optional spaces it
+     * must be followed by {@code END}, a bracket, the end of the name, a
+     * resolution tag, {@code v<digit>} or the file extension. That keeps
+     * numbered NON-episodes out (e.g. "… - 8D AUDIO", "… _ 100 Questions",
+     * "____1 c sugar"), which a naive " - NN" rule wrongly admitted.
+     */
+    private static final String RELEASE_EP =
+            "(?i)(?<![A-Za-z0-9])[-_]\\s*\\d{1,3}\\s*"
+            + "(?=END\\b|\\[|\\(|$|\\d{3,4}p\\b|v\\d|\\.)";
 
     private static final Pattern HAS_EP = Pattern.compile(
             "الحلقة"
             + "|(?i)(?<![A-Za-z0-9])(episode|ep)\\s*[-_.]?\\s*\\d{1,4}(?!\\d)"
-            + "|(?i)(?<![A-Za-z0-9])s\\d{1,2}\\s*[-_.]?\\s*e\\d{1,3}(?!\\d)");
+            + "|(?i)(?<![A-Za-z0-9])s\\d{1,2}\\s*[-_.]?\\s*e\\d{1,3}(?!\\d)"
+            + "|" + RELEASE_EP);
+
+    /** True when a filename carries an explicit episode marker (see {@link #HAS_EP}). */
+    static boolean hasEpisodeMarker(String name) {
+        return name != null && HAS_EP.matcher(name).find();
+    }
 
     /**
      * Internal ("primary") video collection only. EXTERNAL_CONTENT_URI also
@@ -84,8 +105,10 @@ public class LibraryScanner {
     }
 
     /**
-     * True when the row's path is inside the Download tree (or undeterminable
-     * on a platform where the column is unavailable).
+     * True when the row's path is inside a Download tree (or undeterminable on a
+     * platform where the column is unavailable). Both the canonical Android
+     * "Download" folder and a "Downloads" folder are accepted, so downloads
+     * written to either name are tracked.
      */
     private static boolean inDownload(Cursor c, int col) {
         if (col < 0) return true; // platform exposes no path column: cannot filter
@@ -93,10 +116,21 @@ public class LibraryScanner {
         if (p == null) return false; // present column but no path: be strict
         if (Build.VERSION.SDK_INT >= 29) {
             // p = "/Download/…" on primary volume.
-            return p.startsWith("/download/");
+            return isDownloadTree(p, "");
         }
         String base = Environment.getExternalStorageDirectory().getAbsolutePath().toLowerCase(Locale.ROOT);
-        return p.startsWith(base + "/download/");
+        return isDownloadTree(p, base);
+    }
+
+    /**
+     * True when {@code lowerPath} begins with {@code baseLower} + "/download/"
+     * or "/downloads/". For the API 29+ {@code RELATIVE_PATH} form pass an empty
+     * base (the path already starts with "/Download/…").
+     */
+    static boolean isDownloadTree(String lowerPath, String baseLower) {
+        if (lowerPath == null) return false;
+        return lowerPath.startsWith(baseLower + "/download/")
+                || lowerPath.startsWith(baseLower + "/downloads/");
     }
 
     /**
@@ -129,7 +163,7 @@ public class LibraryScanner {
             while (c.moveToNext()) {
                 if (!inDownload(c, pathCol)) continue;
                 String name = c.getString(nameCol);
-                if (name == null || !HAS_EP.matcher(name).find()) continue;
+                if (!hasEpisodeMarker(name)) continue;
                 EpisodeParser.Parsed p = EpisodeParser.parse(name);
                 if (p.ep < 1 || p.title == null) continue;
                 String title = p.title.trim();

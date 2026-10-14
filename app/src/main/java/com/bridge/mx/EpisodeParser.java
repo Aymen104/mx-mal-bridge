@@ -44,6 +44,9 @@ public class EpisodeParser {
             Pattern.compile("(?i)(?<![A-Za-z0-9])S(\\d{1,2})\\s*[-_.]?\\s*E(\\d{1,3})(?!\\d)");
     private static final Pattern TRAIL =
             Pattern.compile("[-\u2013]\\s*(\\d{1,3})\\s*$");
+    /** " - 12 END" / " - 12 FIN" / " - 12 FINAL" (release final-episode markers). */
+    private static final Pattern TRAIL_END =
+            Pattern.compile("(?i)[-\u2013]\\s*(\\d{1,3})\\s*(?:END|FIN|FINAL)\\s*$");
     private static final Pattern LEAD =
             Pattern.compile("^\\s*(\\d{1,3})\\s*[-\u2013.]\\s+");
     private static final Pattern BARE =
@@ -77,6 +80,9 @@ public class EpisodeParser {
             s = s.replace(m.group(), " ");
         } else if ((m = SXXEYY.matcher(s)).find()) {
             ep = Integer.parseInt(m.group(2));
+            s = s.replace(m.group(), " ");
+        } else if ((m = TRAIL_END.matcher(s)).find() && ok(m.group(1))) {
+            ep = Integer.parseInt(m.group(1));
             s = s.replace(m.group(), " ");
         } else if ((m = TRAIL.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));
