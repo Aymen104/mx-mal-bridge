@@ -299,6 +299,11 @@ public final class MalRepair {
         }
 
         Map<Integer, String> cur = MalClient.myListScores(c); // id -> "status|eps|score"
+        if (cur == null) {
+            // Incomplete read: an entry we simply did not see must never be
+            // treated as "absent" (that would be a wrong verdict either way).
+            return new Result(false, "mal repair: list unavailable (incomplete read)");
+        }
         int reverted = 0, keptRated = 0, keptMoved = 0, absent = 0, keptUnknown = 0;
         for (int id : ids) {
             String pushed = pushedApplied(rows, id);

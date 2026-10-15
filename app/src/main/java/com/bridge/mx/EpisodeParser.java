@@ -55,6 +55,10 @@ public class EpisodeParser {
     private static final Pattern NOT_EP =
             Pattern.compile("^(0|240|360|480|540|720|1080|1440|2160)$");
 
+    /** Leading/trailing separator runs left after the episode marker is cut. */
+    private static final Pattern LEAD_TRIM = Pattern.compile("^[\\s\\-\\u2013.]+");
+    private static final Pattern TAIL_TRIM = Pattern.compile("[\\s\\-\\u2013.]+$");
+
     public static Parsed parse(String raw) {
         Parsed p = new Parsed();
         if (raw == null) return p;
@@ -97,7 +101,9 @@ public class EpisodeParser {
 
         s = s.replace('_', ' ');
         s = SPACES.matcher(s).replaceAll(" ");
-        s = s.replaceAll("^[\\s\\-\u2013.]+", "").replaceAll("[\\s\\-\u2013.]+$", "").trim();
+        s = LEAD_TRIM.matcher(s).replaceAll("");
+        s = TAIL_TRIM.matcher(s).replaceAll("");
+        s = s.trim();
 
         p.title = s.isEmpty() ? raw.trim() : s;
         p.ep = ep;

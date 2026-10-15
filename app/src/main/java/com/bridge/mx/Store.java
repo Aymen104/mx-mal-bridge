@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -15,6 +16,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * Holds the rows last observed in MX Player's file list plus the derived
@@ -60,6 +66,29 @@ public class Store {
     private static SharedPreferences prefs;
 
     /**
+     * Cached read-only view of {@link #rows}, rebuilt lazily after any
+     * structural change. {@link #all()} used to copy the whole map on every
+     * call — including inside the list adapter's {@code getCount()/getItem()/
+     * getView()} and many per-row loops — which made those paths O(n^2) and
+     * churned thousands of short-lived lists per tick. The cached list holds
+     * the same (mutable) Row objects, so field reads are unchanged.
+     */
+    private static volatile List<Row> snapshot = null;
+
+    /** Identity reduction for keys: lower-cased ASCII + base Arabic. */
+    private static final Pattern NON_KEY = Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+
+    /** Single daemon thread that performs the coalesced {@link #save()}. */
+    private static final ScheduledExecutorService SAVER =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "store-save");
+                t.setDaemon(true);
+                return t;
+            });
+    private static final long SAVE_DEBOUNCE_MS = 400;
+    private static ScheduledFuture<?> pendingSave;
+
+    /**
      * Snapshot of the user's own MAL list (matchId -> "status|eps"), refreshed
      * each tick. It is the source of truth: a computed plan must never read
      * LOWER than this, so the bridge only ever advances the user's list.
@@ -72,14 +101,35 @@ public class Store {
         load();
     }
 
+    /**
+     * Every row, in observation order, for read-only use. The returned list is
+     * a cached immutable snapshot (invalidated on any structural change), so it
+     * must not be modified; the {@link Row} objects inside are live and may be
+     * updated in place.
+     */
     public static List<Row> all() {
-        return new ArrayList<>(rows.values());
+        List<Row> s = snapshot;
+        if (s == null) {
+            synchronized (Store.class) {
+                s = snapshot;
+                if (s == null) {
+                    s = Collections.unmodifiableList(new ArrayList<>(rows.values()));
+                    snapshot = s;
+                }
+            }
+        }
+        return s;
+    }
+
+    /** Invalidate the {@link #all()} snapshot after a structural change. */
+    private static void dirty() {
+        snapshot = null;
     }
 
     /** Conservative identity normalization. */
     public static String norm(String s) {
         if (s == null) return "";
-        return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+        return NON_KEY.matcher(s.toLowerCase(Locale.ROOT)).replaceAll("");
     }
 
     /**
@@ -101,6 +151,7 @@ public class Store {
     /** Drop all observed rows (test/maintenance helper; listeners untouched). */
     public static synchronized void clear() {
         rows.clear();
+        dirty();
     }
 
     /**
@@ -118,6 +169,7 @@ public class Store {
         int n = rows.size();
         rows.clear();
         malCur.clear();
+        dirty();
         if (prefs != null) {
             try {
                 prefs.edit().putString("rows", "[]").putString("malcur", "").apply();
@@ -147,6 +199,7 @@ public class Store {
             if (ap != null && !ap.isEmpty() && !"plan_to_watch|0".equals(ap)) continue;
             it.remove();
         }
+        dirty();
     }
 
     /** Replace the Download allowlist (canonical keys of every episode file). */
@@ -169,6 +222,7 @@ public class Store {
             Map.Entry<String, Row> e = it.next();
             if (!e.getValue().fromLib && ScopeGate.outside(libKeys, e.getKey())) it.remove();
         }
+        dirty();
     }
 
     /** Insert or refresh a row observed from the live MX list. */
@@ -241,9 +295,25 @@ public class Store {
             }
         }
         rows.put(r.key, r);
+        dirty();
     }
 
-    public static synchronized void save() {
+    /**
+     * Coalesced save: bursts of mutations (a list read raises one per row, the
+     * scroll path one per event) collapse into a single serialization. The data
+     * is already correct in memory; only the JSON serialization is deferred, so
+     * debouncing changes nothing a reader can observe.
+     */
+    public static void save() {
+        synchronized (Store.class) {
+            if (pendingSave != null) pendingSave.cancel(false);
+            pendingSave = SAVER.schedule(Store::saveNow, SAVE_DEBOUNCE_MS,
+                    TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /** Serialize and persist every row immediately (the debounce's target). */
+    public static synchronized void saveNow() {
         if (prefs == null) return;
         try {
             JSONArray arr = new JSONArray();
@@ -397,6 +467,7 @@ public class Store {
         }
         rows.clear();
         rows.putAll(out);
+        dirty();
         return before - out.size();
     }
 

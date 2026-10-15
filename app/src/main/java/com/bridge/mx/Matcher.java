@@ -235,8 +235,13 @@ public class Matcher {
         return TitleTools.score(wantRaw, candidateRaw);
     }
 
+    private static final java.util.regex.Pattern NON_KEY =
+            java.util.regex.Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+    private static final java.util.regex.Pattern TOKEN_SPLIT =
+            java.util.regex.Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+
     static String norm(String s) {
-        return s.toLowerCase().replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+        return NON_KEY.matcher(s.toLowerCase()).replaceAll("");
     }
 
     static double sim(String a, String b) {
@@ -267,7 +272,7 @@ public class Matcher {
     private static Set<String> tokens(String s) {
         Set<String> out = new HashSet<>();
         if (s == null) return out;
-        for (String t : s.toLowerCase().split("[^a-z0-9\u0600-\u06FF]+")) {
+        for (String t : TOKEN_SPLIT.split(s.toLowerCase())) {
             if (t.length() >= 2) out.add(t);
         }
         return out;

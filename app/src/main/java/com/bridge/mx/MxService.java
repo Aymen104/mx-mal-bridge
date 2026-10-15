@@ -223,15 +223,25 @@ public class MxService extends AccessibilityService {
                 return 0;
             }
 
-            List<AccessibilityNodeInfo> all = flatten(root);
+            // One pre-order walk (children pushed in reverse, as before) that
+            // processes each list_item as it is popped, instead of materializing
+            // a list of every node and filtering it afterwards.
+            Deque<AccessibilityNodeInfo> st = new ArrayDeque<>();
+            st.push(root);
             int found = 0;
-            for (AccessibilityNodeInfo item : all) {
+            while (!st.isEmpty()) {
+                AccessibilityNodeInfo item = st.pop();
                 String vid = item.getViewIdResourceName();
-                if (vid == null || !vid.endsWith(":id/list_item")) continue;
-                Store.Row row = readRow(item);
-                if (row != null) {
-                    Store.upsert(row);
-                    found++;
+                if (vid != null && vid.endsWith(":id/list_item")) {
+                    Store.Row row = readRow(item);
+                    if (row != null) {
+                        Store.upsert(row);
+                        found++;
+                    }
+                }
+                for (int i = 0; i < item.getChildCount(); i++) {
+                    AccessibilityNodeInfo c = item.getChild(i);
+                    if (c != null) st.push(c);
                 }
             }
             Log.i(TAG, "collect(" + why + "): " + found + " rows");
@@ -346,7 +356,7 @@ public class MxService extends AccessibilityService {
 
         Store.Row r = new Store.Row();
         EpisodeParser.Parsed parsed = EpisodeParser.parse(title);
-        r.key = Store.canon(title);
+        r.key = Store.canon(parsed, title);
         r.title = title;
         r.duration = dur == null ? "" : dur;
         r.status = status == null ? "" : status;
@@ -712,9 +722,12 @@ public class MxService extends AccessibilityService {
 
     /** True when a window title looks like a playable media file name. */
     private static boolean looksMedia(String s) {
-        return s != null && s.matches(
-                "(?i).*\\.(mp4|mkv|avi|webm|m4v|mov|ts|flv|wmv|3gp|mpg|mpeg|m2ts|rmvb|ogv)$");
+        return s != null && MEDIA_NAME.matcher(s).matches();
     }
+
+    /** Precompiled: {@link #looksMedia} runs on every player sample (~2s). */
+    private static final java.util.regex.Pattern MEDIA_NAME = java.util.regex.Pattern.compile(
+            "(?i).*\\.(mp4|mkv|avi|webm|m4v|mov|ts|flv|wmv|3gp|mpg|mpeg|m2ts|rmvb|ogv)$");
 
     /**
      * One-shot diagnostic (at most every 5 min): log the player view tree so we
@@ -855,6 +868,7 @@ public class MxService extends AccessibilityService {
 
             int applied = 0, held = 0;
             Map<Integer, String> cur = null;
+            boolean guardOk = false;
             if (loggedIn) {
                 // Snapshot the user's current MAL list; it is the source of
                 // truth and is fed into the plan so the bridge never reads
@@ -864,18 +878,35 @@ public class MxService extends AccessibilityService {
                 } catch (Throwable t) {
                     Report.err("sync.apply", "MAL list guard unavailable", t);
                 }
-                if (cur != null && !cur.isEmpty()) {
-                    Store.setMalCur(cur);
-                    Planner.rebuild(); // clamp plans to the user's MAL values
+                if (cur != null) {
+                    guardOk = true;
+                    Store.setMalCur(cur); // complete snapshot (may be legitimately empty)
+                    Planner.rebuild();    // clamp plans to the user's MAL values
                 } else {
-                    Report.err("sync.apply", "MAL list guard returned empty; proceeding without guard");
+                    // An incomplete read is not a licence to write blind: with no
+                    // guard every unread entry looks "absent" and a plan could
+                    // overwrite the user's own data (2026-10-14). Skip the pass.
+                    Report.warn("sync.apply",
+                            "MAL list guard incomplete; skipping all writes this tick");
                 }
             }
-            if (auto && loggedIn && cur != null) {
+            if (auto && loggedIn && guardOk) {
                 for (Store.Row r : Store.all()) {
                     if (!actionable(r) || !pushable(r) || MalRepair.pushBlocked(this, r)) continue;
                     String sig = r.planStatus + "|" + r.planEps;
-                    String mal = cur == null ? null : cur.get(r.matchId);
+                    String mal = cur.get(r.matchId);
+                    if (mal == null) {
+                        // Not in the (complete) snapshot: confirm directly before
+                        // any "add", so a read that missed the entry can never
+                        // overwrite it. null = unknown -> never write blind.
+                        String one = MalClient.myStatusFor(this, r.matchId);
+                        if (one == null) {
+                            Report.warn("sync.apply", "MAL status unknown for '"
+                                    + r.title + "'; skipping this tick");
+                            continue;
+                        }
+                        if (!one.isEmpty()) mal = one; // it IS on the list
+                    }
                     // "mal" is exactly what WE last wrote, but the plan moved on
                     // (e.g. a presence-era "completed" that MX evidence now
                     // walks back): correcting it is safe AND required. The stale

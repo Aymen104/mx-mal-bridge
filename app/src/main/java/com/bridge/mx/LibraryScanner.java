@@ -61,6 +61,8 @@ public class LibraryScanner {
             + "|(?i)(?<![A-Za-z0-9])s\\d{1,2}\\s*[-_.]?\\s*e\\d{1,3}(?!\\d)"
             + "|" + RELEASE_EP);
 
+    private static final Pattern NON_KEY = Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+
     /** True when a filename carries an explicit episode marker (see {@link #HAS_EP}). */
     static boolean hasEpisodeMarker(String name) {
         return name != null && HAS_EP.matcher(name).find();
@@ -245,6 +247,6 @@ public class LibraryScanner {
     }
 
     private static String norm(String s) {
-        return s.toLowerCase().replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+        return NON_KEY.matcher(s.toLowerCase()).replaceAll("");
     }
 }

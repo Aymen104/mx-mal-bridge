@@ -9,6 +9,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Persistent per-episode playback ledger.
@@ -27,6 +28,7 @@ public final class Watched {
 
     private static SharedPreferences prefs;
     private static final Map<String, Integer> pct = new LinkedHashMap<>();
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private Watched() {
     }
@@ -41,7 +43,7 @@ public final class Watched {
     /** Normalised parsed-series title used as the ledger's first key half. */
     static String norm(String s) {
         if (s == null) return "";
-        return s.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        return WHITESPACE.matcher(s.trim().toLowerCase(Locale.ROOT)).replaceAll(" ");
     }
 
     static String key(String parsedTitle, int ep) {

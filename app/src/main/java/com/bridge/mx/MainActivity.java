@@ -1046,7 +1046,20 @@ public class MainActivity extends Activity implements Store.Listener {
             int ok = 0, err = 0, held = 0;
             for (final Store.Row r : q) {
                 String sig = r.planStatus + "|" + r.planEps;
-                if (cur != null && Planner.wouldDowngrade(cur.get(r.matchId),
+                String mal = cur == null ? null : cur.get(r.matchId);
+                if (mal == null) {
+                    // Not in the list snapshot: read this one directly before any
+                    // write, so a short/partial read can never overwrite it.
+                    String one = MalClient.myStatusFor(MainActivity.this, r.matchId);
+                    if (one == null) {
+                        err++;
+                        say("\u2717 " + shortName(r.title)
+                                + ": couldn't read MAL status; skipped");
+                        continue;
+                    }
+                    if (!one.isEmpty()) mal = one;
+                }
+                if (mal != null && Planner.wouldDowngrade(mal,
                         r.planStatus, r.planEps)) {
                     r.applied = sig; // remember it; never retry this downgrade
                     held++;

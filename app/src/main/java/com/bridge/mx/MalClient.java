@@ -173,6 +173,9 @@ public class MalClient {
 
     // --------------------------------------------------------------- tokens
 
+    /** Serializes token refresh so two threads never race the refresh token. */
+    private static final Object TOKEN_LOCK = new Object();
+
     /** Valid access token, transparently refreshed. Call from a bg thread. */
     public static String token(Context c) {
         SharedPreferences p = prefs(c);
@@ -180,21 +183,31 @@ public class MalClient {
         long exp = p.getLong("expires_at", 0);
         if (!access.isEmpty() && System.currentTimeMillis() < exp - 60_000L) return access;
 
-        String refresh = p.getString("refresh", "");
-        if (refresh.isEmpty()) return null;
-        try {
-            Map<String, String> form = new HashMap<>();
-            form.put("client_id", CLIENT_ID);
-            form.put("client_secret", CLIENT_SECRET);
-            form.put("grant_type", "refresh_token");
-            form.put("redirect_uri", REDIRECT);
-            form.put("refresh_token", refresh);
-            String body = postForm(TOKEN_URL, form);
-            saveToken(c, new JSONObject(body));
-            return prefs(c).getString("access", null);
-        } catch (Exception e) {
-            Log.w(TAG, "refresh failed", e);
-            return null;
+        // The sync pipeline and the mal-repair thread both call this. MAL
+        // rotates the refresh token, so two concurrent refreshes can invalidate
+        // each other and leave one thread with no token - which surfaces as an
+        // "empty" list guard. Serialize, and re-check once inside the lock.
+        synchronized (TOKEN_LOCK) {
+            access = p.getString("access", "");
+            exp = p.getLong("expires_at", 0);
+            if (!access.isEmpty() && System.currentTimeMillis() < exp - 60_000L) return access;
+
+            String refresh = p.getString("refresh", "");
+            if (refresh.isEmpty()) return null;
+            try {
+                Map<String, String> form = new HashMap<>();
+                form.put("client_id", CLIENT_ID);
+                form.put("client_secret", CLIENT_SECRET);
+                form.put("grant_type", "refresh_token");
+                form.put("redirect_uri", REDIRECT);
+                form.put("refresh_token", refresh);
+                String body = postForm(TOKEN_URL, form);
+                saveToken(c, new JSONObject(body));
+                return prefs(c).getString("access", null);
+            } catch (Exception e) {
+                Log.w(TAG, "refresh failed", e);
+                return null;
+            }
         }
     }
 
@@ -328,32 +341,18 @@ public class MalClient {
      * The user's whole list as animeId -> "status|num_watched". Used before an
      * apply so a file-based estimate can never walk a manual completion (or a
      * higher episode count) backwards.
-     * <p>If a page request fails, we log and continue with what we have.
+     *
+     * <p><b>All or nothing.</b> Returns {@code null} when the walk cannot be
+     * COMPLETED — a page failed even after a retry, or the safety cap was
+     * reached — so no caller can mistake a partial page-set for the user's
+     * whole list. Treating a truncated read as complete is exactly what let the
+     * bridge "add" (overwrite) an entry it had simply not read yet: on
+     * 2026-10-14 a short read missed a completed show and re-wrote it as
+     * "watching 12". A non-null but empty map means the user genuinely has no
+     * entries.
      */
     public static Map<Integer, String> myListStatus(Context c) {
-        Map<Integer, String> out = new HashMap<>();
-        for (int offset = 0; offset < 6000; offset += 300) {
-            try {
-                JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
-                        + offset + "&fields=list_status");
-                JSONArray data = j.optJSONArray("data");
-                if (data == null) break;
-                for (int i = 0; i < data.length(); i++) {
-                    JSONObject o = data.getJSONObject(i);
-                    JSONObject node = o.optJSONObject("node");
-                    JSONObject ls = o.optJSONObject("list_status");
-                    if (node == null || ls == null) continue;
-                    out.put(node.optInt("id", -1),
-                            ls.optString("status", "") + "|"
-                                    + ls.optInt("num_episodes_watched", 0));
-                }
-                if (data.length() < 300) break;
-            } catch (Exception e) {
-                Log.w(TAG, "myListStatus page offset=" + offset + " failed", e);
-                break; // stop pagination on error, return what we have
-            }
-        }
-        return out;
+        return walkList(c, false);
     }
 
     /**
@@ -361,32 +360,87 @@ public class MalClient {
      * walk as {@link #myListStatus} but also carries the user's score, the
      * "rated = genuine" discriminator used by {@link MalRepair} so a bogus
      * write is never withdrawn from an entry the user actually engaged with.
+     * {@code null} when the walk could not be completed.
      */
     public static Map<Integer, String> myListScores(Context c) {
+        return walkList(c, true);
+    }
+
+    /**
+     * Paginated walk of {@code users/@me/animelist}, sorted by {@code
+     * anime_title}. The default sort ({@code list_updated_at}) is re-ordered by
+     * our own writes, which makes offset pagination skip entries and silently
+     * drop them from the guard; a title-keyed order is stable across the walk.
+     * Each page is retried once, and any failure past that makes the whole walk
+     * "unknown" (null) rather than silently short.
+     *
+     * @return the complete map, or {@code null} when completion is not provable
+     */
+    private static Map<Integer, String> walkList(Context c, boolean withScore) {
+        final int page = 300;
         Map<Integer, String> out = new HashMap<>();
-        for (int offset = 0; offset < 6000; offset += 300) {
-            try {
-                JSONObject j = getJson(c, "users/@me/animelist?nsfw=true&limit=300&offset="
-                        + offset + "&fields=list_status");
-                JSONArray data = j.optJSONArray("data");
-                if (data == null) break;
-                for (int i = 0; i < data.length(); i++) {
-                    JSONObject o = data.getJSONObject(i);
-                    JSONObject node = o.optJSONObject("node");
-                    JSONObject ls = o.optJSONObject("list_status");
-                    if (node == null || ls == null) continue;
-                    out.put(node.optInt("id", -1),
-                            ls.optString("status", "") + "|"
-                                    + ls.optInt("num_episodes_watched", 0) + "|"
-                                    + ls.optInt("score", 0));
+        int offset = 0;
+        while (offset < 6000) {
+            JSONObject j = null;
+            for (int attempt = 0; attempt < 2 && j == null; attempt++) {
+                try {
+                    j = getJson(c, "users/@me/animelist?nsfw=true&sort=anime_title"
+                            + "&limit=" + page + "&offset=" + offset + "&fields=list_status");
+                } catch (Exception e) {
+                    Log.w(TAG, "animelist offset=" + offset + " attempt " + (attempt + 1)
+                            + " failed", e);
+                    sleep(800);
                 }
-                if (data.length() < 300) break;
-            } catch (Exception e) {
-                Log.w(TAG, "myListScores page offset=" + offset + " failed", e);
-                break; // stop pagination on error, return what we have
             }
+            if (j == null) return null;                 // incomplete -> unknown
+            JSONArray data = j.optJSONArray("data");
+            if (data == null) return null;
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject o = data.optJSONObject(i);
+                if (o == null) continue;
+                JSONObject node = o.optJSONObject("node");
+                JSONObject ls = o.optJSONObject("list_status");
+                if (node == null || ls == null) continue;
+                String v = ls.optString("status", "") + "|"
+                        + ls.optInt("num_episodes_watched", 0);
+                if (withScore) v = v + "|" + ls.optInt("score", 0);
+                out.put(node.optInt("id", -1), v);
+            }
+            if (data.length() < page) return out;       // natural end -> complete
+            offset += page;
+            sleep(200);                                 // gentle between pages
         }
-        return out;
+        return null;                                    // cap hit -> incomplete
+    }
+
+    /**
+     * The signed-in user's status for ONE anime, read directly (no snapshot):
+     * {@code "status|num_watched"} when the anime is on their list, {@code ""}
+     * when it is confirmed NOT on the list, or {@code null} when the answer
+     * could not be obtained. Called before any "not on the list" write so a
+     * flaky or partial list read can never turn into an overwrite — the caller
+     * MUST skip the write when this is {@code null}.
+     */
+    public static String myStatusFor(Context c, int animeId) {
+        try {
+            JSONObject j = getJson(c, "anime/" + animeId + "?fields=my_list_status");
+            JSONObject ls = j.optJSONObject("my_list_status");
+            if (ls == null) return "";
+            String st = ls.optString("status", "");
+            if (st.isEmpty()) return "";
+            return st + "|" + ls.optInt("num_episodes_watched", 0);
+        } catch (Exception e) {
+            Log.w(TAG, "myStatusFor " + animeId + " failed", e);
+            return null;
+        }
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static String me(Context c) throws Exception {

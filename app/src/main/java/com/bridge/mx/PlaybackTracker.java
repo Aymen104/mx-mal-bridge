@@ -19,6 +19,9 @@ public final class PlaybackTracker {
     /** Watched % at or above which an episode counts as finished. */
     public static final int FINISH_PCT = 95;
 
+    private static final java.util.regex.Pattern CLOCK_DIGITS =
+            java.util.regex.Pattern.compile("\\d{1,6}");
+
     private PlaybackTracker() {
     }
 
@@ -45,7 +48,7 @@ public final class PlaybackTracker {
         long total = 0;
         for (String p : parts) {
             p = p.trim();
-            if (p.isEmpty() || !p.matches("\\d{1,6}")) return -1;
+            if (p.isEmpty() || !CLOCK_DIGITS.matcher(p).matches()) return -1;
             total = total * 60 + Long.parseLong(p);
         }
         if (total < 0 || total > 24L * 3600L * 7L) return -1; // sanity: < 1 week

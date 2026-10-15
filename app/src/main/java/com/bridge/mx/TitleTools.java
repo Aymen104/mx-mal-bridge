@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Pure-JVM title comprehension for anime names.
@@ -31,6 +32,16 @@ public final class TitleTools {
 
     // ------------------------------------------------------------------ keys
 
+    // Precompiled: these normalisers run on every title comparison in the
+    // matching ensemble, so a fresh Pattern.compile per call added up fast.
+    private static final Pattern NON_KEY =
+            Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+    private static final Pattern COMBINING_MARKS = Pattern.compile("\\p{M}+");
+    private static final Pattern NON_LOOSE =
+            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+");
+    private static final Pattern TOKEN_SPLIT =
+            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+");
+
     /**
      * Legacy key: lower-cased, ASCII alphanumerics plus the base Arabic block,
      * everything else dropped. Kept byte-for-byte compatible with the original
@@ -38,7 +49,7 @@ public final class TitleTools {
      */
     public static String norm(String s) {
         if (s == null) return "";
-        return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+        return NON_KEY.matcher(s.toLowerCase(Locale.ROOT)).replaceAll("");
     }
 
     /**
@@ -50,11 +61,11 @@ public final class TitleTools {
     public static String normLoose(String s) {
         if (s == null) return "";
         String x = Normalizer.normalize(s, Normalizer.Form.NFKC);
-        x = Normalizer.normalize(x, Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
+        x = COMBINING_MARKS.matcher(Normalizer.normalize(x, Normalizer.Form.NFD)).replaceAll("");
         x = katakanaToHiragana(x);
         x = arabicFold(x);
         x = x.toLowerCase(Locale.ROOT);
-        return x.replaceAll("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+", "");
+        return NON_LOOSE.matcher(x).replaceAll("");
     }
 
     /** Full-width katakana (U+30A1..U+30F6) folded onto hiragana. */
@@ -292,7 +303,7 @@ public final class TitleTools {
         if (s == null) return out;
         String x = arabicFold(katakanaToHiragana(
                 Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)));
-        for (String t : x.split("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+")) {
+        for (String t : TOKEN_SPLIT.split(x)) {
             if (t.length() >= 2) out.add(t);
         }
         return out;

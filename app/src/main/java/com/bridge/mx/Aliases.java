@@ -2,6 +2,7 @@ package com.bridge.mx;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Shorthand aliases that MyAnimeList's search cannot recover on its own.
@@ -26,6 +27,11 @@ public class Aliases {
     private static final Map<String, String> BUILTIN = new LinkedHashMap<>();
     private static final Map<String, String> LEARNED = new LinkedHashMap<>();
 
+    /** Same "letters+digits+base Arabic" reduction used everywhere for identity. */
+    private static final Pattern NON_KEY = Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
+    /** A trailing season marker ("S1", "s12") peeled off a shorthand. */
+    private static final Pattern SEASON_TAIL = Pattern.compile("s\\d{1,2}$");
+
     static {
         // shorthand -> canonical MAL title
         BUILTIN.put("gin", "Gintama");
@@ -43,7 +49,7 @@ public class Aliases {
     /** Remember that a shorthand resolves to a canonical title. */
     public static synchronized void learn(String shorthand, String canonical) {
         if (shorthand == null || canonical == null || canonical.isEmpty()) return;
-        String k = norm(shorthand).replaceAll("s\\d{1,2}$", "");
+        String k = SEASON_TAIL.matcher(norm(shorthand)).replaceFirst("");
         if (k.length() < 3) return;
         LEARNED.put(k, canonical);
     }
@@ -59,15 +65,25 @@ public class Aliases {
         LEARNED.put(key, canonical);
     }
 
+    /**
+     * Exact key, or the key a trailing season marker was peeled off ("gins2"
+     * -> "gin"). Replaces the old linear scan that compiled one {@code matches}
+     * pattern per stored alias on every lookup: with ~2.6k learned aliases that
+     * was thousands of {@link java.util.regex.Pattern#compile} calls for a
+     * single title, the matching pass's hottest cost.
+     */
     private static String lookup(Map<String, String> map, String n) {
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            String k = e.getKey();
-            if (n.equals(k) || n.matches(k + "s\\d{1,2}")) return e.getValue();
+        String hit = map.get(n);
+        if (hit != null) return hit;
+        String base = SEASON_TAIL.matcher(n).replaceFirst("");
+        if (!base.equals(n)) {
+            hit = map.get(base);
+            if (hit != null) return hit;
         }
         return null;
     }
 
     private static String norm(String s) {
-        return s.toLowerCase().replaceAll("[^a-z0-9\u0600-\u06FF]+", "");
+        return NON_KEY.matcher(s.toLowerCase()).replaceAll("");
     }
 }
