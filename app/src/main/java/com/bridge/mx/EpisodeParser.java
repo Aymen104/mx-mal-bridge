@@ -42,6 +42,9 @@ public class EpisodeParser {
             Pattern.compile("(?i)(?<![A-Za-z0-9])EP\\s*[-_.]?\\s*(\\d{1,4})(?!\\d)");
     private static final Pattern SXXEYY =
             Pattern.compile("(?i)(?<![A-Za-z0-9])S(\\d{1,2})\\s*[-_.]?\\s*E(\\d{1,3})(?!\\d)");
+    // Season_Episode without S/E letters: "Show 2_08", "Show 01_03"
+    private static final Pattern SEASON_EP =
+            Pattern.compile("(?<![A-Za-z0-9])(\\d{1,2})\\s*[_-]\\s*(\\d{1,3})(?!\\d)");
     private static final Pattern TRAIL =
             Pattern.compile("[-\u2013]\\s*(\\d{1,3})\\s*$");
     /** " - 12 END" / " - 12 FIN" / " - 12 FINAL" (release final-episode markers). */
@@ -87,6 +90,9 @@ public class EpisodeParser {
             s = s.replace(m.group(), " ");
         } else if ((m = TRAIL_END.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));
+            s = s.replace(m.group(), " ");
+        } else if ((m = SEASON_EP.matcher(s)).find()) {
+            ep = Integer.parseInt(m.group(2));
             s = s.replace(m.group(), " ");
         } else if ((m = TRAIL.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));

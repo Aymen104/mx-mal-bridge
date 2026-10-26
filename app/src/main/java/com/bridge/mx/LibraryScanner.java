@@ -59,6 +59,7 @@ public class LibraryScanner {
             "الحلقة"
             + "|(?i)(?<![A-Za-z0-9])(episode|ep)\\s*[-_.]?\\s*\\d{1,4}(?!\\d)"
             + "|(?i)(?<![A-Za-z0-9])s\\d{1,2}\\s*[-_.]?\\s*e\\d{1,3}(?!\\d)"
+            + "|(?<![A-Za-z0-9])(\\d{1,2})\\s*[_-]\\s*(\\d{1,3})(?!\\d)"
             + "|" + RELEASE_EP);
 
     private static final Pattern NON_KEY = Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
