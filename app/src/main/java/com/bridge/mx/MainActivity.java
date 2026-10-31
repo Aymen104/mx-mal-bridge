@@ -498,6 +498,10 @@ public class MainActivity extends Activity implements Store.Listener {
      * matcher learns any shorthands they unlock.
      */
     private void doTitles() {
+        if (!NetWatch.isOnline(this)) {
+            say("Anime titles: offline \u2014 the bundled catalogue is still used.");
+            return;
+        }
         say("Refreshing anime titles from animeTosho...");
         new Thread(() -> {
             // refresh() studies and self-tests any new bulk of titles.
@@ -553,6 +557,10 @@ public class MainActivity extends Activity implements Store.Listener {
      * rated or has since moved on. See MalRepair for the exact rules.
      */
     private void doRepair() {
+        if (!NetWatch.isOnline(this)) {
+            say("MAL repair: offline \u2014 nothing read or written.");
+            return;
+        }
         say("Repairing bogus MAL writes...");
         new Thread(() -> {
             final MalRepair.Result r = MalRepair.repairNow(MainActivity.this);
@@ -571,6 +579,10 @@ public class MainActivity extends Activity implements Store.Listener {
 
     /** QA: plan the repair without writing anything to MAL or apps state. */
     private void doRepairDry() {
+        if (!NetWatch.isOnline(this)) {
+            say("MAL repair dry-run: offline \u2014 MAL list cannot be read.");
+            return;
+        }
         say("Planning MAL repair (dry)...");
         new Thread(() -> {
             final MalRepair.Result r = MalRepair.dryRun(MainActivity.this);
@@ -630,6 +642,10 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     private void downloadModel() {
+        if (!NetWatch.isOnline(this)) {
+            say("AI: offline \u2014 connect to the internet to download the model.");
+            return;
+        }
         say("AI: downloading model (~521 MB)...");
         exec.execute(() -> {
             File f = LlmBrain.modelFile(MainActivity.this);
@@ -742,6 +758,10 @@ public class MainActivity extends Activity implements Store.Listener {
             say("Already logged in (Clear app data to sign out).");
             return;
         }
+        if (!NetWatch.isOnline(this)) {
+            say("MAL login: offline \u2014 connect to the internet first.");
+            return;
+        }
         say("MAL login: browser opening. Approve, wait for 'login OK', return here.");
         MalClient.startLogin(this, (err, ok) -> {
             if (err != null) {
@@ -828,6 +848,16 @@ public class MainActivity extends Activity implements Store.Listener {
         MxService s = MxService.get();
         // collect() touches accessibility nodes: it must run on the main thread.
         final int mxRows = s == null ? 0 : s.collect("sync");
+        if (s == null) {
+            if (AccessibilityHelper.isEnabled(this)) {
+                say("Sync: accessibility service is enabled but not connected yet;"
+                        + " opening MX Player usually starts it. Scanning the video"
+                        + " library only for now.");
+            } else {
+                say("Sync: accessibility service is off \u2014 MX rows cannot be read;"
+                        + " scanning the video library only.");
+            }
+        }
         if (!LibraryScanner.canRead(this)) {
             say("Sync: MX " + mxRows + " row(s); library scan needs video access.");
             requestMediaPermission();
@@ -836,13 +866,16 @@ public class MainActivity extends Activity implements Store.Listener {
         }
         final boolean loggedIn = MalClient.hasSession(this);
         final boolean auto = Store.autoApply();
+        final boolean online = NetWatch.isOnline(this);
         say("Sync: MX " + mxRows + " row(s) + library scan, then plan/match"
-                + (auto ? "/apply..." : " (dry-run)..."));
+                + (online ? (auto ? "/apply..." : " (dry-run)...")
+                          : " (offline: local only)..."));
         exec.execute(() -> {
             int lib = LibraryScanner.scan(this);
             Planner.rebuild();
-            int ok = 0, miss = 0;
-            if (loggedIn) {
+            int ok = 0;
+            int miss = 0;
+            if (loggedIn && online) {
                 List<Store.Row> targets = matchTargets();
                 if (!targets.isEmpty()) {
                     int[] r = matchAll(targets);
@@ -858,18 +891,21 @@ public class MainActivity extends Activity implements Store.Listener {
             ui.post(() -> {
                 WatchLog.event("sync", "library " + flib + " series, matched " + fok
                         + ", missed " + fmiss + ", rows " + Store.all().size()
-                        + (auto ? " (apply)" : " (dry-run)"));
+                        + (online ? (auto ? " (apply)" : " (dry-run)") : " (offline)"));
                 say("Sync: library " + flib + " series, matched " + fok
                         + (fmiss > 0 ? " (" + fmiss + " missed)" : "")
                         + ". Stored rows: " + Store.all().size() + ".");
-                if (!loggedIn) {
-                    say("Sync: not logged in to MAL — matched nothing. Use More > Login.");
+                if (!online) {
+                    say("Sync: offline \u2014 local scan/plan done. MAL matching and"
+                            + " writes are paused until the network returns.");
+                } else if (!loggedIn) {
+                    say("Sync: not logged in to MAL \u2014 matched nothing. Use More > Login.");
                 } else if (auto) {
                     List<Store.Row> q = pendingQueue();
                     if (q.isEmpty()) say("Sync: nothing to push (already up to date).");
                     else runApply(q);
                 } else {
-                    say("Sync: dry-run — tap Apply to review and push.");
+                    say("Sync: dry-run \u2014 tap Apply to review and push.");
                 }
             });
         });
@@ -933,6 +969,10 @@ public class MainActivity extends Activity implements Store.Listener {
     private void doMatch() {
         if (!MalClient.hasSession(this)) {
             say("Match: log in to MAL first.");
+            return;
+        }
+        if (!NetWatch.isOnline(this)) {
+            say("Match: offline \u2014 nothing sent. Try again when the network returns.");
             return;
         }
         Planner.rebuild();
@@ -1018,6 +1058,11 @@ public class MainActivity extends Activity implements Store.Listener {
             }
             return;
         }
+        if (!NetWatch.isOnline(this)) {
+            say("Apply: offline \u2014 " + q.size() + " change(s) kept locally;"
+                    + " nothing sent. Apply again when the network returns.");
+            return;
+        }
         StringBuilder msg = new StringBuilder();
         for (int i = 0; i < q.size() && i < 12; i++) {
             Store.Row r = q.get(i);
@@ -1035,6 +1080,10 @@ public class MainActivity extends Activity implements Store.Listener {
     }
 
     private void runApply(final List<Store.Row> q) {
+        if (!NetWatch.isOnline(this)) {
+            say("Apply: offline \u2014 nothing sent. Try again when the network returns.");
+            return;
+        }
         say("Applying " + q.size() + " change(s)...");
         exec.execute(() -> {
             Map<Integer, String> cur = null;
@@ -1096,10 +1145,8 @@ public class MainActivity extends Activity implements Store.Listener {
 
     private void refreshStatus() {
         boolean live = MxService.get() != null;
-        String enabled = Settings.Secure.getString(getContentResolver(),
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-        boolean svcOn = enabled != null
-                && enabled.contains(getPackageName() + "/com.bridge.mx.MxService");
+        boolean svcOn = AccessibilityHelper.isEnabled(this);
+        boolean online = NetWatch.isOnline(this);
         boolean loggedIn = MalClient.hasSession(this);
         int rows = Store.all().size();
         int planned = 0;
@@ -1110,8 +1157,12 @@ public class MainActivity extends Activity implements Store.Listener {
 
         // Headline: the one thing the user should know, in plain words.
         String head;
-        if (!live && !svcOn) {
+        if (!svcOn) {
             head = "\u26A0  Turn on the accessibility service";
+        } else if (!live) {
+            head = "Accessibility service enabled \u2014 waiting for Android to start it";
+        } else if (!online) {
+            head = "\u26A0  Offline \u2014 local tracking only";
         } else if (!loggedIn) {
             head = "\u26A0  Sign in to MyAnimeList";
         } else if (planned > 0 && !auto) {
@@ -1137,11 +1188,14 @@ public class MainActivity extends Activity implements Store.Listener {
         // Raw numbers, small and dim, for anyone who wants them.
         String sync = "";
         MxService s = MxService.get();
-        if (s != null) {
+        if (!online) {
+            sync = " | off \u2014 MAL paused";
+        } else if (s != null) {
             long in = s.nextRunInMs();
             if (in > 0) sync = " | next auto-sync " + ((in + 59_000) / 60_000) + "m";
         }
         statusDetails.setText("service " + (live ? "live" : (svcOn ? "enabled-idle" : "off"))
+                + " | net " + (online ? "online" : "OFFLINE")
                 + " | MAL " + (loggedIn ? "signed in" : "signed out")
                 + " | ai " + LlmBrain.get(this).status()
                 + " | " + Retention.statusLine()

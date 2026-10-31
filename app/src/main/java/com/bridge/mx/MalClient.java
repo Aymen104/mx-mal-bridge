@@ -65,6 +65,10 @@ public class MalClient {
 
     /** Full PKCE round-trip: local socket on 8585 + system browser. */
     public static void startLogin(final Context ctx, final Cb cb) {
+        if (!NetWatch.isOnline(ctx)) {
+            finish(new Handler(Looper.getMainLooper()), cb, "offline", null);
+            return;
+        }
         final String verifier = randomString(127);
         prefs(ctx).edit().putString("verifier", verifier).apply();
         final Handler main = new Handler(Looper.getMainLooper());
@@ -149,6 +153,10 @@ public class MalClient {
 
     private static void exchange(Context ctx, String code, String verifier,
                                  Handler main, Cb cb) {
+        if (!NetWatch.isOnline(ctx)) {
+            finish(main, cb, "offline", null);
+            return;
+        }
         try {
             Map<String, String> form = new HashMap<>();
             form.put("client_id", CLIENT_ID);
@@ -178,6 +186,7 @@ public class MalClient {
 
     /** Valid access token, transparently refreshed. Call from a bg thread. */
     public static String token(Context c) {
+        if (!NetWatch.isOnline(c)) return null; // never spend a timeout offline
         SharedPreferences p = prefs(c);
         String access = p.getString("access", "");
         long exp = p.getLong("expires_at", 0);
@@ -225,6 +234,7 @@ public class MalClient {
     // ----------------------------------------------------------------- api
 
     public static JSONObject getJson(Context c, String path) throws Exception {
+        if (!NetWatch.isOnline(c)) throw new Exception("offline");
         String t = token(c);
         if (t == null) throw new Exception("not logged in");
         HttpURLConnection conn = (HttpURLConnection) new URL(API + path).openConnection();
@@ -451,6 +461,7 @@ public class MalClient {
     public static void updateStatus(Context c, int animeId, String status, int eps)
             throws Exception {
         Log.i(TAG, "updateStatus: animeId=" + animeId + " status=" + status + " eps=" + eps);
+        if (!NetWatch.isOnline(c)) throw new Exception("offline");
         String t = token(c);
         if (t == null) throw new Exception("not logged in");
         Map<String, String> form = new HashMap<>();
@@ -473,6 +484,7 @@ public class MalClient {
      */
     public static void deleteStatus(Context c, int animeId) throws Exception {
         Log.i(TAG, "deleteStatus: animeId=" + animeId);
+        if (!NetWatch.isOnline(c)) throw new Exception("offline");
         String t = token(c);
         if (t == null) throw new Exception("not logged in");
         int code = request("DELETE", API + "anime/" + animeId + "/my_list_status", t, null);
@@ -484,6 +496,7 @@ public class MalClient {
     public static void addToList(Context c, int animeId, String status, int eps)
             throws Exception {
         Log.i(TAG, "addToList: animeId=" + animeId + " status=" + status + " eps=" + eps);
+        if (!NetWatch.isOnline(c)) throw new Exception("offline");
         String t = token(c);
         if (t == null) throw new Exception("not logged in");
         Map<String, String> form = new HashMap<>();

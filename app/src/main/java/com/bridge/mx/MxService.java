@@ -60,6 +60,8 @@ public class MxService extends AccessibilityService {
     }
     /** Search cadence for newly seen info. */
     public static final long PIPELINE_PERIOD_MS = 24 * 60 * 1000L;
+    /** Retry cadence while offline; the network callback normally wakes us first. */
+    private static final long OFFLINE_RETRY_MS = 2 * 60 * 1000L;
     private static final String TAG = "MxService";
     private static final String CH = "mxbridge_status";
     private static final int NOTIFY_ID = 1001;
@@ -77,6 +79,10 @@ public class MxService extends AccessibilityService {
     private String lastNotify = "";
     private NotificationManager notifMgr;
     volatile long nextRunAt = 0;
+    /** True while a background pass is using the pipeline thread. */
+    private volatile boolean pipelineActive;
+    /** Last MediaStore scan, so offline retries do not walk the library every time. */
+    private long lastLibScan;
 
     public static MxService get() {
         return instance;
@@ -120,12 +126,17 @@ public class MxService extends AccessibilityService {
         AliasStore.load(this);
         configureServiceInfo(); // interaction with other apps = code only
         Report.info("service", "accessibility service connected");
+        boolean online = NetWatch.isOnline(this);
+        NetWatch.start(this, this::onOnlineChanged);
+        Report.info("service", "network " + (online ? "online" : "offline"));
         updateNotification(null);
         // Populate the Download allowlist early so the observation gate has
         // data before the first MX event (the ~24 min tick re-arms it later).
         kickLibScan();
-        // first background sync shortly after connect, then every ~20 min
-        armNext(8_000);
+        // first background sync shortly after connect, then every ~24 min.
+        // Offline starts with a short retry so the local state stays fresh and
+        // the MAL pass resumes as soon as the network callback fires.
+        armNext(online ? 8_000 : OFFLINE_RETRY_MS);
         // If MX is already on screen (the common case when the service is
         // re-enabled mid-playback, or after an app update), start sampling at
         // once. No MX accessibility event is guaranteed to arrive, so without
@@ -140,6 +151,7 @@ public class MxService extends AccessibilityService {
             try {
                 if (LibraryScanner.canRead(this)) {
                     LibraryScanner.scan(this);
+                    lastLibScan = System.currentTimeMillis();
                     Store.save();
                     Store.notifyChanged();
                 }
@@ -182,6 +194,9 @@ public class MxService extends AccessibilityService {
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        NetWatch.stop();
+        handler.removeCallbacks(tickR);
+        pipeline.shutdownNow();
         try {
             if (notifMgr != null) notifMgr.cancel(NOTIFY_ID);
         } catch (Throwable ignored) {
@@ -764,6 +779,7 @@ public class MxService extends AccessibilityService {
 
     /** Arm the next network tick after delayMs (replaces any pending tick). */
     private void armNext(long delayMs) {
+        if (instance != this) return; // destroyed while a worker was finishing
         handler.removeCallbacks(tickR);
         nextRunAt = System.currentTimeMillis() + delayMs;
         handler.postDelayed(tickR, delayMs);
@@ -772,11 +788,39 @@ public class MxService extends AccessibilityService {
 
     private void tick() {
         pipeline.execute(() -> {
+            pipelineActive = true;
+            boolean networkRan = false;
             try {
-                runPipeline();
+                networkRan = runPipeline();
             } finally {
-                armNext(PIPELINE_PERIOD_MS); // ~24 min until the next search
+                pipelineActive = false;
+                boolean online = NetWatch.isOnline(this);
+                long delay;
+                if (!networkRan && online) {
+                    delay = 1_500;                 // came online during the pass
+                } else if (online) {
+                    delay = PIPELINE_PERIOD_MS;    // normal ~24 min cadence
+                } else {
+                    delay = OFFLINE_RETRY_MS;      // local-only retry
+                }
+                armNext(delay);
             }
+        });
+    }
+
+    /**
+     * Network callback: resume the MAL pass immediately when the phone comes
+     * back online after a tick that had to skip it. Do not touch the user's
+     * Auto setting, and do not queue a duplicate pass while one is running -
+     * the tick's finally block will do the catch-up.
+     */
+    private void onOnlineChanged(boolean online) {
+        handler.post(() -> {
+            if (instance != this) return;
+            if (online && !pipelineActive) {
+                armNext(1_500);
+            }
+            updateNotification(null);
         });
     }
 
@@ -784,11 +828,16 @@ public class MxService extends AccessibilityService {
      * Network pass: refresh rows, parse, search MAL for not-yet-matched
      * titles (rate-limited internally), plan, and auto-apply only when the
      * Auto toggle is on. Never touches MX Player.
+     *
+     * @return true when this pass had a working network for the whole run;
+     *         false means the MAL channel was skipped or interrupted, so the
+     *         caller should retry soon instead of waiting a full day.
      */
-    private void runPipeline() {
+    private boolean runPipeline() {
+        boolean online = NetWatch.isOnline(this);
         try {
             Retention.purgeIfDue(this);
-            if (Catalogue.isStale(this)) {
+            if (online && Catalogue.isStale(this)) {
                 // Quarterly-ish refresh of the anime-title knowledge base. Runs on
                 // its own thread so the ~250-page animeTosho walk never stalls the
                 // match/apply pass; Catalogue guards against overlapping runs.
@@ -800,15 +849,20 @@ public class MxService extends AccessibilityService {
             }
             collect("tick");
             int lib = 0;
-            if (LibraryScanner.canRead(this)) {
+            long now = System.currentTimeMillis();
+            // A local-only offline retry must not walk the whole MediaStore every
+            // two minutes; a scan at most every ten minutes is enough.
+            if (LibraryScanner.canRead(this)
+                    && (online || now - lastLibScan >= 10 * 60_000L)) {
                 lib = LibraryScanner.scan(this);
+                lastLibScan = now;
             }
             Planner.rebuild();
             boolean loggedIn = MalClient.hasSession(this);
             boolean auto = Store.autoApply();
             int matched = 0;
 
-            if (loggedIn) {
+            if (loggedIn && online) {
                 // One MAL search per distinct parsed title (a series has many
                 // files); assign the result to every row carrying that title.
                 Map<String, List<Store.Row>> byTitle = new LinkedHashMap<>();
@@ -869,7 +923,7 @@ public class MxService extends AccessibilityService {
             int applied = 0, held = 0;
             Map<Integer, String> cur = null;
             boolean guardOk = false;
-            if (loggedIn) {
+            if (loggedIn && online) {
                 // Snapshot the user's current MAL list; it is the source of
                 // truth and is fed into the plan so the bridge never reads
                 // lower than the user's own list (only ever advances).
@@ -958,7 +1012,7 @@ public class MxService extends AccessibilityService {
                 }
             }
 
-            if (loggedIn) {
+            if (loggedIn && online) {
                 // Automatic withdrawal of bogus MAL writes (see MalRepair): the
                 // once-a-day cooldown makes this cheap on every tick, and it
                 // runs on its own thread so a slow MAL pass never stalls the
@@ -975,14 +1029,20 @@ public class MxService extends AccessibilityService {
             Store.save();
             Store.notifyChanged();
             updateNotification(null);
-            if (matched > 0 || applied > 0 || held > 0 || lib > 0) {
+            if (!online) {
+                Report.info("sync", "offline: local scan/plan only; MAL pass paused");
+            } else if (matched > 0 || applied > 0 || held > 0 || lib > 0) {
                 Report.info("sync", "tick: lib=" + lib + " matched=" + matched
                         + " applied=" + applied + " held=" + held
                         + (auto ? "" : " (auto off - dry-run)"));
             }
         } catch (Throwable t) {
             Report.err("sync", "background pipeline failed", t);
+            // A code error is not a connectivity change: keep the normal
+            // cadence instead of hot-looping every 1.5 s.
+            return NetWatch.isOnline(this);
         }
+        return online && NetWatch.isOnline(this);
     }
 
     private static boolean actionable(Store.Row r) {
@@ -1030,8 +1090,12 @@ public class MxService extends AccessibilityService {
                 }
                 text = rows.size() + " rows | " + planned + " planned | auto "
                         + (Store.autoApply() ? "ON" : "off");
-                long in = nextRunInMs();
-                if (in > 0) text += " | sync in " + ((in + 59_000) / 60_000) + "m";
+                if (!NetWatch.isOnline(this)) {
+                    text += " | offline - sync paused";
+                } else {
+                    long in = nextRunInMs();
+                    if (in > 0) text += " | sync in " + ((in + 59_000) / 60_000) + "m";
+                }
                 text += " | " + Retention.statusLine();
             }
             if (text.equals(lastNotify)) return;

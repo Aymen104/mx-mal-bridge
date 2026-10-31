@@ -255,6 +255,9 @@ public final class MalRepair {
     }
 
     static Result repair(Context c, boolean dry, boolean force) {
+        // Do not consume the daily cooldown (or spend MAL read retries) when the
+        // phone has no network. The caller may have checked a moment earlier.
+        if (!NetWatch.isOnline(c)) return new Result(false, "mal repair: offline");
         SharedPreferences p = prefs(c);
         long now = System.currentTimeMillis();
         if (!dry && !force) {
