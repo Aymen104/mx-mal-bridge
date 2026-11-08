@@ -26,6 +26,11 @@ import java.util.Map;
  * wrongly withdrawn on this basis). The only artifact is a {@code fromLib} row:
  * one the MX list reader never saw, whose only claim to progress was file
  * presence.
+ *
+ * <p>Widened 2026-11-08 (v1.5.19): a {@code plan_to_watch|0} write from such a
+ * row IS an artifact again — v1.5.17 used it to REGISTER downloaded, never
+ * played series on the user's MAL list. Only the repair's own neutralization
+ * (state="none") is exempt.
  */
 public class MalRepairTest {
 
@@ -170,9 +175,50 @@ public class MalRepairTest {
     }
 
     @Test
-    public void artifact_ignores_withdrawn_rows() {
+    public void artifact_covers_a_plan_to_watch_registration() {
+        // v1.5.19 (2026-11-08): v1.5.17 wrote plan_to_watch|0 for every
+        // downloaded-but-unwatched series, which ADDED the show to the user's
+        // MAL list. That write is ours (applied only ever holds what the bridge
+        // pushed), the row is library-only and evidence-free, so it is the same
+        // fabrication the repair exists to remove.
         Map<String, Integer> empty = new HashMap<>();
-        assertFalse(MalRepair.isArtifact(libRow(1, "plan_to_watch|0", DARK, -1, "Dream", "Dream"), empty));
+        Store.Row r = libRow(918, "plan_to_watch|0", -1, -1, "Gin S1 - EP 048", "Gintama");
+        r.state = "present";
+        assertTrue(MalRepair.isArtifact(r, empty));
+        assertTrue(MalRepair.candidates(java.util.Arrays.asList(r), empty).contains(918));
+    }
+
+    @Test
+    public void artifact_spares_repair_neutralized_rows() {
+        // The repair's own neutralize() writes state="none" + plan_to_watch|0 on
+        // an already-withdrawn row: that is bookkeeping, not a new fabrication.
+        Map<String, Integer> empty = new HashMap<>();
+        Store.Row r = libRow(918, "plan_to_watch|0", -1, -1, "Gin S1 - EP 048", "Gintama");
+        r.state = "none";
+        assertFalse(MalRepair.isArtifact(r, empty));
+    }
+
+    @Test
+    public void artifact_spares_plan_to_watch_row_with_playback_evidence() {
+        // The user is actually watching it now: never withdraw.
+        Map<String, Integer> empty = new HashMap<>();
+        Store.Row r = libRow(61323, "plan_to_watch|0", DARK, 62, "Ao no Hako Season 2",
+                "Ao no Hako Season 2");
+        r.state = "present";
+        assertFalse(MalRepair.isArtifact(r, empty));
+    }
+
+    @Test
+    public void decide_reverts_exact_unrated_plan_to_watch_registration() {
+        assertEquals(MalRepair.Action.REVERT,
+                MalRepair.decide("plan_to_watch|0|0", "plan_to_watch|0"));
+    }
+
+    @Test
+    public void decide_hands_off_when_user_moved_a_plan_to_watch() {
+        // The user themselves started watching it, or changed the status.
+        assertEquals(MalRepair.Action.KEEP_MOVED,
+                MalRepair.decide("watching|3|0", "plan_to_watch|0"));
     }
 
     @Test

@@ -10,8 +10,8 @@ android {
         applicationId "com.bridge.mx"
         minSdk 24
         targetSdk 34
-        versionCode 23
-        versionName "1.5.18"
+        versionCode 24
+        versionName "1.5.19"
     }
 
     buildTypes {

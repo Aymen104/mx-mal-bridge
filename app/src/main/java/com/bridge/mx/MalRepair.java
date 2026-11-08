@@ -39,6 +39,13 @@ import java.util.TreeMap;
  *       pushed ({@code applied != ""}), library-only ({@code fromLib}), with
  *       no playback evidence (row watched %, watched ledger, real tag or a
  *       last-played date). An MX-observed row is never a candidate.
+ *   <li>Included since v1.5.19 (2026-11-08): a {@code plan_to_watch|0} write.
+ *       v1.5.17 pushed that plan for every downloaded-but-unwatched series,
+ *       which REGISTERED the show on the user's list. The signature is ours
+ *       ({@code applied} only ever holds what the bridge wrote), the row is
+ *       library-only and evidence-free, and {@link #decide} still requires MAL
+ *       to hold exactly that value with no user score, so only our own
+ *       fabrication is removed.
  *   <li>A write is withdrawn only when MAL currently holds EXACTLY what we
  *       pushed (same status and episode count) and the entry has no user
  *       score ({@code score == 0}). Anything the user rated or has since
@@ -51,6 +58,9 @@ import java.util.TreeMap;
  *   <li>Reverted ids are remembered; the bridge will not re-push them until
  *       real evidence appears (playback or a real tag), which clears the
  *       mark. Rows are also neutralized to {@code none}/{@code plan_to_watch|0}.
+ *   <li>A shielded id is never processed twice: its MAL entry is already gone
+ *       ({@link #decide} would report KEEP_ABSENT), so a second pass would only
+ *       add daily log noise.</li>
  * </ul>
  *
  * <p>Runs automatically once a day (see {@link #autoRepair}); {@link #dryRun}
@@ -143,7 +153,14 @@ public final class MalRepair {
     static boolean isArtifact(Store.Row r, Map<String, Integer> ledger) {
         if (r.matchId <= 0) return false;
         if (r.applied == null || r.applied.isEmpty()) return false;
-        if ("plan_to_watch|0".equals(r.applied)) return false;
+        // A plan_to_watch|0 write is a fabrication too: v1.5.17 registered every
+        // downloaded-but-unwatched series on MAL as "Plan to Watch" (2026-11-08).
+        // It counts as an artifact UNLESS it is the signature the repair itself
+        // writes when it neutralizes an already-withdrawn row (state="none") —
+        // those rows were handled and must not become candidates again. The
+        // durable guard against re-withdrawing is the per-series shield
+        // ("r:<id>") written by revert(); repair() also skips shielded ids.
+        if ("plan_to_watch|0".equals(r.applied) && "none".equals(r.state)) return false;
         if (r.watchedPct >= 0) return false;                        // real playback
         if (ColorClassify.hasTag(r.rgb)) return false;              // real tag -> genuine
         if (r.playedAt != null && !r.playedAt.isEmpty()) return false; // MX last-played
@@ -295,6 +312,10 @@ public final class MalRepair {
                 }
             }
             rows = Store.all(); // unshield may have restored rows
+            // Already-withdrawn series: their MAL entry is gone, so re-running
+            // them every day only produces KEEP_ABSENT noise. The shield is
+            // dropped above the moment real evidence appears.
+            ids.removeIf(id -> prefs(c).getString("r:" + id, null) != null);
         }
         if (ids.isEmpty()) {
             if (!dry) p.edit().putLong("last_run", now).apply();
