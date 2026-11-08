@@ -218,6 +218,7 @@ public class MainActivity extends Activity implements Store.Listener {
             logToggle.setText(logOpen
                     ? "Log \u25BE  (tap to hide)" : "Log \u25B8  (tap to show)");
         });
+
         root.addView(logToggle, lp(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -785,6 +786,9 @@ public class MainActivity extends Activity implements Store.Listener {
     private void doScan() {
         MxService s = MxService.get();
         if (s == null) {
+            // Same reason as doSync: the answer must not be hidden in a
+            // collapsed log.
+            revealLog();
             say("Service not running: Settings > Accessibility > MX-MAL Bridge > On,"
                     + " then open MX Player and tap Scan again.");
             refreshStatus();
@@ -849,6 +853,10 @@ public class MainActivity extends Activity implements Store.Listener {
         // collect() touches accessibility nodes: it must run on the main thread.
         final int mxRows = s == null ? 0 : s.collect("sync");
         if (s == null) {
+            // The log is collapsed by default, so without this the whole
+            // explanation of the degraded run was invisible: the app just
+            // looked dead (2026-11-08 emulator repro, a11y off).
+            revealLog();
             if (AccessibilityHelper.isEnabled(this)) {
                 say("Sync: accessibility service is enabled but not connected yet;"
                         + " opening MX Player usually starts it. Scanning the video"
@@ -1001,18 +1009,11 @@ public class MainActivity extends Activity implements Store.Listener {
      * sync — counting it as "ready to send" made the header read "53 ready"
      * while nothing was actually queued (2026-10-14).
      */
-    private static boolean needsPush(Store.Row r) {
-        if (r.planStatus.isEmpty()) return false;
-        if (r.matchId <= 0) return false;
-        if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
-        return !(r.planStatus + "|" + r.planEps).equals(r.applied);
-    }
-
     /** Rows whose plan can be applied now (matched, and not a bogus completion). */
     private List<Store.Row> pendingQueue() {
         List<Store.Row> q = new ArrayList<>();
         for (Store.Row r : Store.all()) {
-            if (needsPush(r)) q.add(r);
+            if (PushGate.needsPush(r)) q.add(r);
         }
         return q;
     }
@@ -1151,14 +1152,15 @@ public class MainActivity extends Activity implements Store.Listener {
         int rows = Store.all().size();
         int planned = 0;
         for (Store.Row r : Store.all()) {
-            if (needsPush(r)) planned++;
+            if (PushGate.needsPush(r)) planned++;
         }
         boolean auto = Store.autoApply();
 
         // Headline: the one thing the user should know, in plain words.
         String head;
         if (!svcOn) {
-            head = "\u26A0  Turn on the accessibility service";
+            head = "\u26A0  Turn on the accessibility service \u2014 it can still scan"
+                    + " your Download folder, but it cannot read MX Player";
         } else if (!live) {
             head = "Accessibility service enabled \u2014 waiting for Android to start it";
         } else if (!online) {
@@ -1227,6 +1229,20 @@ public class MainActivity extends Activity implements Store.Listener {
             logView.append(s + "\n");
             logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         });
+    }
+
+    /**
+     * Open the log panel (the same state a tap on the toggle produces) so a
+     * one-shot explanation is not written where nobody can see it. The log is
+     * closed by default to keep the screen calm; this is used only when the app
+     * has to say why it is doing less than usual — with the accessibility
+     * service off, tapping "Sync now" otherwise looked like nothing happened.
+     */
+    private void revealLog() {
+        if (logOpen) return;
+        logOpen = true;
+        logScroll.setVisibility(View.VISIBLE);
+        logToggle.setText("Log \u25BE  (tap to hide)");
     }
 
     /** Friendly wording for the internal row states. */
@@ -1340,7 +1356,14 @@ public class MainActivity extends Activity implements Store.Listener {
                         String detail = body.substring(4);
                         if (detail.startsWith(",")) detail = detail.substring(1).trim();
                         text = "\u2713 Kept as-is" + (detail.isEmpty() ? "" : ": " + detail);
-                    } else if (needsPush(r)) {
+                    } else if (body.startsWith("planned")) {
+                        // A downloaded-but-unwatched series is a local hint
+                        // only: writing it would register the show on MAL as
+                        // "Plan to Watch" (2026-11-08), which MalRepair then
+                        // has to delete again.
+                        text = "Kept local: " + body
+                                + " \u2014 on device, not watched (not sent to MAL)";
+                    } else if (PushGate.needsPush(r)) {
                         text = "Will send to MAL: " + body;
                     } else {
                         // Already written — do not say "will send" (it won't).

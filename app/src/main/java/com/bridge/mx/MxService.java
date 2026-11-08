@@ -1053,10 +1053,17 @@ public class MxService extends AccessibilityService {
      * Safe to push to MAL: there must be a real match, and a "completed" mark
      * must carry a concrete episode count. This blocks the old bug where a row
      * with no episode number was sent as "completed" (MAL shows 0/0).
+     *
+     * <p>{@code plan_to_watch} is excluded for the same reason as in
+     * {@link PushGate}: that plan means "downloaded, never played", and pushing
+     * it registers the show on the user's list (log: "added to list: ... ->
+     * plan_to_watch|0", 2026-11-08) — the fabricated entry MalRepair then has to
+     * delete again.
      */
     private static boolean pushable(Store.Row r) {
         if (r.planStatus.isEmpty() || r.matchId <= 0) return false;
         if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
+        if ("plan_to_watch".equals(r.planStatus)) return false;
         return true;
     }
 
