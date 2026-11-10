@@ -62,6 +62,18 @@ public class MxService extends AccessibilityService {
     public static final long PIPELINE_PERIOD_MS = 24 * 60 * 1000L;
     /** Retry cadence while offline; the network callback normally wakes us first. */
     private static final long OFFLINE_RETRY_MS = 2 * 60 * 1000L;
+
+    /** Throttle for the "offline: idle" log line (at most one per 30 min). */
+    private static final long OFFLINE_LOG_MS = 30 * 60 * 1000L;
+    private long lastOfflineLog = 0L;
+    /**
+     * True when Android unbound this accessibility service while the phone had
+     * no network (realme's background management does this on an idle,
+     * screen-off device). We cannot force Android to rebind, so the status
+     * notification says so and its tap action opens the Accessibility settings
+     * instead of the app. Cleared by onServiceConnected().
+     */
+    private boolean serviceUnboundWhileOffline = false;
     private static final String TAG = "MxService";
     private static final String CH = "mxbridge_status";
     private static final int NOTIFY_ID = 1001;
@@ -117,6 +129,8 @@ public class MxService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        serviceUnboundWhileOffline = false; // bound again: the warning is stale
+        AccessibilityHelper.ensureEnabled(this); // self-heal + arm the watchdog
         Store.init(this);
         Watched.init(this);
         Retention.init(this);
@@ -201,6 +215,7 @@ public class MxService extends AccessibilityService {
             if (notifMgr != null) notifMgr.cancel(NOTIFY_ID);
         } catch (Throwable ignored) {
         }
+        if (!NetWatch.isOnline(this)) serviceUnboundWhileOffline = true;
         Report.info("service", "accessibility service destroyed");
         super.onDestroy();
     }
@@ -818,6 +833,15 @@ public class MxService extends AccessibilityService {
         handler.post(() -> {
             if (instance != this) return;
             if (online && !pipelineActive) {
+                // Coming back online: run a FULL pass at once (the offline tick
+                // deliberately does no work, so MX's list, the library scan and
+                // the MAL pass all have to happen now).
+                lastLibScan = 0;
+                if (serviceUnboundWhileOffline) {
+                    Report.info("service", "network is back, but the accessibility"
+                            + " service is still unbound (realme released it while"
+                            + " offline) - MX rows stay unread until it is re-enabled");
+                }
                 armNext(1_500);
             }
             updateNotification(null);
@@ -835,6 +859,23 @@ public class MxService extends AccessibilityService {
      */
     private boolean runPipeline() {
         boolean online = NetWatch.isOnline(this);
+        if (!online) {
+            // Offline means IDLE. There is no MAL pass to run, and the rows and
+            // the local plan cannot change in a way that matters while we are
+            // offline, so walking MX's list through the accessibility service
+            // and MediaStore (and rebuilding the plan) every two minutes only
+            // burns battery. Measured 2026-11-09/10: ~100 such ticks over 3.5 h
+            // with no network, each one an accessibility traversal plus a plan
+            // rebuild. The connectivity callback in onOnlineChanged() still
+            // resumes instantly, so nothing is lost by waiting.
+            long now = System.currentTimeMillis();
+            if (now - lastOfflineLog >= 30 * 60_000L) {
+                lastOfflineLog = now;
+                Report.info("sync", "offline: idle until the network returns"
+                        + " (no MX read, no library scan, no plan)");
+            }
+            return false;
+        }
         try {
             Retention.purgeIfDue(this);
             if (online && Catalogue.isStale(this)) {
@@ -1108,14 +1149,25 @@ public class MxService extends AccessibilityService {
             if (text.equals(lastNotify)) return;
             lastNotify = text;
 
-            Intent i = new Intent(this, MainActivity.class);
-            PendingIntent pi = PendingIntent.getActivity(this, 0, i,
-                    PendingIntent.FLAG_IMMUTABLE);
+            // When Android unbound the accessibility service while the phone
+            // was offline (realme's background management), the tap must lead
+            // straight to the Accessibility settings - opening the app would
+            // not rebind it, which is exactly what made this look like "the
+            // app never came back".
+            boolean a11yOff = serviceUnboundWhileOffline || !AccessibilityHelper.isEnabled(this);
+            Intent i = a11yOff
+                    ? new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    : new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            PendingIntent pi = PendingIntent.getActivity(this, 1, i,
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
             Notification.Builder b = Build.VERSION.SDK_INT >= 26
                     ? new Notification.Builder(this, CH)
                     : new Notification.Builder(this);
             b.setSmallIcon(android.R.drawable.stat_sys_download_done)
-                    .setContentTitle("MX-MAL Bridge")
+                    .setContentTitle(a11yOff
+                            ? "MX-MAL Bridge - accessibility service is off (tap to re-enable)"
+                            : "MX-MAL Bridge")
                     .setContentText(text)
                     .setContentIntent(pi)
                     .setOngoing(true)

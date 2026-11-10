@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -60,6 +62,18 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- Watchdog: re-enables the accessibility service when realme's
+             background management released it while the phone was idle/offline
+             (Android never rebinds it on its own). Inexact 20 min, no network. -->
+        <receiver
+            android:name=".AutoRecoverReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.bridge.mx.AUTO_RECOVER" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

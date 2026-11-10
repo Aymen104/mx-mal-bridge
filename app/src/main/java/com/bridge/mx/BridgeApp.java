@@ -17,6 +17,10 @@ public class BridgeApp extends Application {
         Report.info("session", "app start, sdk=" + Build.VERSION.SDK_INT
                 + " device=" + Build.MANUFACTURER + " " + Build.MODEL);
 
+        // Keep the accessibility-service watchdog armed from the moment the
+        // process exists, not only when the service happens to connect.
+        AutoRecoverReceiver.schedule(this);
+
         final Thread.UncaughtExceptionHandler prev =
                 Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {

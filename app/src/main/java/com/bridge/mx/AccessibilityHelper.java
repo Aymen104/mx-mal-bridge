@@ -2,6 +2,7 @@ package com.bridge.mx;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.ResolveInfo;
 import android.provider.Settings;
@@ -88,5 +89,63 @@ public final class AccessibilityHelper {
             if (k.equals(cls) || k.equals("." + cls)) return true;
         }
         return false;
+    }
+
+    /** True when this app may write secure settings (granted once over adb). */
+    static boolean canWriteSecure(Context c) {
+        if (c == null) return false;
+        return c.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS")
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Ensure THIS app's accessibility service is enabled, adding it while
+     * preserving every other service the user or another app has turned on.
+     *
+     * <p>Android releases an accessibility service when the phone goes idle
+     * with the screen off (realme does this while the device is offline), and it
+     * does not rebind it by itself even after the network returns - that is the
+     * "the app never came back" report. With WRITE_SECURE_SETTINGS the setting
+     * can be restored directly, and the system rebinds the service as soon as
+     * the value changes. Without the permission this is a no-op, and the caller
+     * falls back to telling the user (see MxService's notification).
+     *
+     * @return true when our component is enabled afterwards.
+     */
+    public static boolean ensureEnabled(Context c) {
+        if (c == null) return false;
+        Context app = c.getApplicationContext();
+        if (app == null) app = c;
+        if (!canWriteSecure(app)) return isEnabled(app);   // nothing we can do
+        try {
+            String me = app.getPackageName() + "/" + MxService.class.getName();
+            ContentResolver cr = app.getContentResolver();
+            String cur = Settings.Secure.getString(cr,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (hasComponent(cur, app.getPackageName(), MxService.class.getName())) {
+                Settings.Secure.putInt(cr, "accessibility_enabled", 1);
+                return true;
+            }
+            StringBuilder sb = new StringBuilder();
+            if (cur != null) {
+                for (String token : cur.split(":")) {
+                    String s = token.trim();
+                    if (s.isEmpty()) continue;
+                    if (sb.length() > 0) sb.append(':');
+                    sb.append(s);
+                }
+            }
+            if (sb.length() > 0) sb.append(':');
+            sb.append(me);
+            Settings.Secure.putString(cr,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, sb.toString());
+            Settings.Secure.putInt(cr, "accessibility_enabled", 1);
+            Report.info("service", "accessibility re-enabled automatically to '"
+                    + me + "' (was: " + cur + ")");
+            return true;
+        } catch (Throwable t) {
+            Report.warn("service", "ensureEnabled failed: " + t.getMessage());
+            return isEnabled(app);
+        }
     }
 }
