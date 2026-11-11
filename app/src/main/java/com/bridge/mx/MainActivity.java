@@ -342,6 +342,11 @@ public class MainActivity extends Activity implements Store.Listener {
     protected void onResume() {
         super.onResume();
         Store.addListener(this);
+        // Opening the app must heal the service (Android/realme releases it while
+        // the phone is idle+offline and never rebinds it on its own) and keep the
+        // watchdog alarm armed. No-op when everything is already fine.
+        AccessibilityHelper.ensureEnabled(this);
+        AutoRecoverReceiver.schedule(this);
         refreshStatus();
         adapter.notifyDataSetChanged();
     }
