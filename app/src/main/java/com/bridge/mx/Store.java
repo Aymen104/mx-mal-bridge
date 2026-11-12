@@ -246,19 +246,24 @@ public class Store {
                     && ("finished".equals(old.state) || "none".equals(old.state))) {
                 r.state = old.state;
             }
-            // Nor may the persistent "Played X ago" line downgrade a grey
-            // "finished": on MX 3.3.1 a finished row still shows its played
-            // date, so the text would otherwise stomp the tag the classifier
-            // just read. The colour stays authoritative until the next
-            // classify pass re-reads it (which can also move it back to
-            // "watching" when the ink is blue again).
-            if ("finished".equals(old.state)
+            // MX's ink colour is re-read on EVERY pass (it is the only signal
+            // MX 3.4.x exposes), so a previous "finished" must NOT be forced
+            // back onto a row MX now reads as NEW/watching/unknown. That
+            // carry-over is what kept Tantei S2 ep6 "finished" after MX had
+            // re-read it as NEW, and pushed MAL to 6 (2026-11-12). Only our
+            // OWN playback ledger - a recorded observation of the progress
+            // bar, not a screenshot guess - may keep "finished" across passes.
+            if ("finished".equals(old.state) && r.watchedPct > 0
+                    && PlaybackTracker.isFinished(r.watchedPct)
                     && ("watching".equals(r.state) || "unknown".equals(r.state)
                         || "new".equals(r.state))) {
                 r.state = "finished";
-                if (r.rgb < 0) r.rgb = old.rgb;
             }
-            if (r.rgb < 0) r.rgb = old.rgb;
+            // The sampled colour is per-pass evidence too: never inherit the
+            // previous pass's pixel, or one mis-attributed screenshot (a row
+            // that had scrolled, a thumbnail gradient) pins the row forever.
+            // Rows not on screen this pass simply carry no colour, and
+            // MxService.classify() then leaves them at their text verdict.
             if (r.watchedPct < old.watchedPct) r.watchedPct = old.watchedPct;
             // Playback evidence outranks MX's NEW badge: the badge clears only
             // when MX re-reads the item, so a list re-read can arrive after the

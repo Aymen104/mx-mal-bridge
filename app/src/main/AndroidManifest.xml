@@ -4,6 +4,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Foreground service: the only reliable way to stop realme from freezing
+         the bridge process whenever the accessibility binding is dropped.
+         Without it no watch progress is recorded while MX plays with the
+         accessibility service unbound (measured 2026-11-12). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Granted once over adb (pm grant) so Repair can flip wireless debugging. -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -38,9 +44,14 @@
             </intent-filter>
         </activity>
 
+        <!-- The MX reader runs in the foreground too: an accessibility service may
+             call startForeground(), and doing so keeps the bridge (and its
+             watch-progress recording) alive while Android holds the binding
+             but the phone is idle - otherwise realme freezes the process. -->
         <service
             android:name=".MxService"
             android:exported="true"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -48,19 +59,27 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/mx_accessibility" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Reads MX Player's on-screen list state to sync watch progress to MyAnimeList" />
         </service>
 
         <!-- Reads MX Player's MediaSession to track real watch progress
              (the standard media-app mechanism). The user enables this once
-             under Settings > Notification access. -->
+             under Settings > Notification access. Runs in the foreground so
+             the process is not frozen between accessibility bindings. -->
         <service
             android:name=".MediaWatchService"
             android:exported="true"
+            android:foregroundServiceType="specialUse"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Reads MX Player's media session to record watch progress for the MyAnimeList sync" />
         </service>
 
         <!-- Watchdog: re-enables the accessibility service when realme's

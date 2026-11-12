@@ -131,6 +131,13 @@ public class MxService extends AccessibilityService {
         instance = this;
         serviceUnboundWhileOffline = false; // bound again: the warning is stale
         AccessibilityHelper.ensureEnabled(this); // self-heal + arm the watchdog
+        // A FOREGROUND service is what keeps this process out of the OEM's
+        // freezer. Without it realme freezes the bridge whenever the
+        // accessibility binding is dropped, the MediaSession watcher stops
+        // sampling and NO watch progress is recorded at all - which is why an
+        // episode the user finished in MX looked "never played" to the bridge
+        // (Ao no Hako S2 ep5, 2026-11-12).
+        promoteToForeground();
         Store.init(this);
         Watched.init(this);
         Retention.init(this);
@@ -488,8 +495,12 @@ public class MxService extends AccessibilityService {
             String verdict = ColorClassify.classify((rgb >> 16) & 0xFF,
                     (rgb >> 8) & 0xFF, rgb & 0xFF);
             if (verdict == null) continue;
-            boolean textState = "watching".equals(r.state) || "new".equals(r.state)
-                    || "present".equals(r.state);
+            // A NEW badge ("never played") and a library "present" row are
+            // FINAL verdicts: MX's ink colour may only refine a row MX itself
+            // already called played. Letting a colour sample override "new" is
+            // what turned Tantei S2 ep6 (a genuinely NEW file) into
+            // "finished" and pushed MAL to 6 (2026-11-12).
+            boolean textState = "watching".equals(r.state);
             String next = r.state;
             if (textState) {
                 // A row MX gave a label/badge: a blue "watching" verdict only
@@ -857,6 +868,62 @@ public class MxService extends AccessibilityService {
      *         false means the MAL channel was skipped or interrupted, so the
      *         caller should retry soon instead of waiting a full day.
      */
+    /**
+     * True when a row's only evidence is an ANCIENT MX "last played" date and
+     * we have no ledger observation of our own.
+     *
+     * <p>Pushing that evidence onto MAL months later produces exactly the
+     * "Otome Game Sekai got updated although I never touched the first episode"
+     * surprise: the play was real, but it is not news. A row the app watched
+     * itself (ledger percent, even a small one) is always fresh enough — that
+     * is our own observation of the progress bar.
+     */
+    private static boolean evidenceStale(Store.Row r) {
+        if (r == null) return false;
+        if (r.watchedPct > 0) return false;                 // we saw it play
+        long min = playedAtMinutes(r.playedAt);
+        if (min < 0) return false;                          // unparseable: don't guess
+        return min > 30L * 24 * 60;                         // older than 30 days
+    }
+
+    /** Minutes since MX's "last played" label, or -1 when it carries no date. */
+    private static long playedAtMinutes(String playedAt) {
+        if (playedAt == null || playedAt.isEmpty()) return -1;
+        String s = playedAt.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(?i)played\\s+(just now|(\\d+)\\s+minute|(\\d+)\\s+hour|(\\d+)\\s+day)"
+                        + "s?\\s+ago").matcher(s);
+        if (m.find()) {
+            if (m.group(1) != null && m.group(1).equalsIgnoreCase("just now")) return 0;
+            if (m.group(2) != null) return Long.parseLong(m.group(2));
+            if (m.group(3) != null) return Long.parseLong(m.group(3)) * 60L;
+            if (m.group(4) != null) return Long.parseLong(m.group(4)) * 1440L;
+        }
+        // "Played on Jul 9" / "Played on 9 Jul" -> distance from today.
+        m = java.util.regex.Pattern.compile(
+                "(?i)played\\s+on\\s+([a-z]{3})\\.?\\s+(\\d{1,2})").matcher(s);
+        if (m.find()) {
+            int mon = "janfebmaraprmayjunjulaugsepoctnovdec".indexOf(
+                    m.group(1).toLowerCase()) / 3;
+            if (mon >= 0) {
+                try {
+                    java.util.Calendar c = java.util.Calendar.getInstance();
+                    c.set(java.util.Calendar.MONTH, mon);
+                    c.set(java.util.Calendar.DAY_OF_MONTH,
+                            Integer.parseInt(m.group(2)));
+                    c.set(java.util.Calendar.HOUR_OF_DAY, 12);
+                    long then = c.getTimeInMillis();
+                    long now = System.currentTimeMillis();
+                    if (then > now) then -= 365L * 24 * 60 * 60 * 1000; // last year
+                    return (now - then) / 60000L;
+                } catch (Throwable ignore) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
+    }
+
     private boolean runPipeline() {
         boolean online = NetWatch.isOnline(this);
         if (!online) {
@@ -1023,6 +1090,40 @@ public class MxService extends AccessibilityService {
                         Report.info("sync.apply", "correcting own stale write: "
                                 + r.title + " " + mal + " -> " + sig);
                     }
+                    // MAL still holds OUR OWN previous write and the new,
+                    // evidence-backed plan is LOWER: our earlier write was
+                    // wrong (a mis-read row), so walk it back. A user edit can
+                    // never reach this branch - it would leave MAL different
+                    // from the signature we recorded, so this can only undo
+                    // our own mistake (e.g. Tantei S2 ep6 pushed to 6 while MX
+                    // actually showed NEW).
+                    if (ownStaleLive
+                            && Planner.wouldDowngrade(mal, r.planStatus, r.planEps)) {
+                        try {
+                            MalClient.updateStatus(this, r.matchId, r.planStatus, r.planEps);
+                            Report.info("sync.apply", "walked back own bad write: "
+                                    + r.title + " " + mal + " -> " + sig);
+                            for (Store.Row o : Store.all()) {
+                                if (o.matchId == r.matchId) o.applied = sig;
+                            }
+                            applied++;
+                            Store.save();
+                        } catch (Throwable t) {
+                            Report.err("sync.apply", "walk-back failed for '"
+                                    + r.title + "'", t);
+                        }
+                        continue;
+                    }
+                    // Never backfill MAL from ANCIENT MX evidence. A "Played on
+                    // Jul 9" line is real, but surfacing it on MAL months later
+                    // is exactly the "Otome Game Sekai got updated although I
+                    // did not touch the first ep" surprise. The decision is
+                    // remembered (applied = sig) so it is not retried per tick.
+                    if (evidenceStale(r)) {
+                        r.applied = sig;
+                        held++;
+                        continue;
+                    }
                     try {
                         // If anime not on user's list, add it first; else update.
                         Log.i("MxService", "Applying: " + r.title + " mal=" + mal + " sig=" + sig);
@@ -1124,6 +1225,50 @@ public class MxService extends AccessibilityService {
     public void refreshNotification() {
         lastNotify = "";
         updateNotification(null);
+    }
+
+    /**
+     * Promote this accessibility service to a foreground service.
+     *
+     * <p>This is the single change that makes watch-progress recording reliable.
+     * realme freezes the whole bridge process whenever the accessibility
+     * binding is dropped (measured 2026-11-11/12: work happens only in short
+     * bursts after each watchdog re-enable). A frozen process cannot sample MX
+     * Player's MediaSession and cannot write the playback ledger, so an
+     * episode the user actually finished arrived at the bridge as "never
+     * played" (Ao no Hako S2 ep5 -> MAL credited 4 instead of 5).
+     */
+    private void promoteToForeground() {
+        try {
+            // The channel must exist before the notification is posted, or the
+            // system throws CannotPostForegroundServiceNotificationException
+            // asynchronously (uncatchable) and the process dies.
+            if (notifMgr != null && Build.VERSION.SDK_INT >= 26) {
+                notifMgr.createNotificationChannel(new NotificationChannel(CH,
+                        "MX-MAL Bridge status", NotificationManager.IMPORTANCE_LOW));
+            }
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, CH)
+                    : new Notification.Builder(this);
+            b.setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle("MX-MAL Bridge")
+                    .setContentText("watching MX Player -> MyAnimeList")
+                    .setContentIntent(PendingIntent.getActivity(this, 1,
+                            new Intent(this, MainActivity.class)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT))
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true);
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIFY_ID, b.build(),
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFY_ID, b.build());
+            }
+            Report.info("service", "foreground service started (process is no longer freezable)");
+        } catch (Throwable t) {
+            Report.err("service", "startForeground failed: " + t.getMessage());
+        }
     }
 
     private void updateNotification(String force) {

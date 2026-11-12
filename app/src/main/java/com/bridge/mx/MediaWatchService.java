@@ -1,11 +1,14 @@
 package com.bridge.mx;
 
+import android.app.Notification;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -34,6 +37,13 @@ public class MediaWatchService extends NotificationListenerService {
     /** MX Player (free and pro) package prefix. */
     private static final String MX = "com.mxtech.videoplayer.";
     private static final long POLL_MS = 3000;
+    /** Re-arm the chain even when no MX session exists (never stop forever). */
+    private static final long REKICK_MS = 30_000L;
+    private static final int FGS_ID = 0x4D58;
+    /** Diagnostic throttle: at most one "cannot read" line per 5 minutes. */
+    private static final long DIAG_MS = 5 * 60 * 1000L;
+    private static final String DIAG_CH = "mxbridge_watch";
+    private long lastDiag;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean polling;
@@ -43,17 +53,59 @@ public class MediaWatchService extends NotificationListenerService {
         public void run() {
             boolean active = poll();
             if (active) handler.postDelayed(this, POLL_MS);
-            else polling = false;
+            // No MX session right now: do NOT stop forever (one missed
+            // notification used to kill the chain silently), just retry slowly.
+            else handler.postDelayed(this, REKICK_MS);
         }
     };
 
+    /**
+     * The chain must be armed from onCreate(), not only from
+     * onListenerConnected(): calling startForeground() turns this into a STARTED
+     * service, and the started instance gets a fresh object that never sees
+     * onListenerConnected() - which is why the poll chain silently never ran
+     * and the ledger stayed empty for months.
+     */
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        ensureInit();
+        kick();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        kick();
+        return START_STICKY;
+    }
+
     @Override
     public void onListenerConnected() {
-        ensureInit();
+        ensureInit();        // Foreground too: this listener is usually the LAST thing bound after
+        // realme drops the accessibility service, so it must keep the process
+        // unfreezable on its own or watch progress stops being recorded.
+        try {
+            startForeground(FGS_ID,
+                    new Notification.Builder(this, DIAG_CH)
+                            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                            .setContentTitle("MX-MAL Bridge")
+                            .setContentText("watching MX Player progress")
+                            .setOngoing(true)
+                            .setOnlyAlertOnce(true)
+                            .build(),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } catch (Throwable t) {
+            Report.info("mediawatch", "startForeground not possible: " + t.getMessage());
+        }
         Report.info("mediawatch", "notification listener connected");
         kick();
     }
 
+    @Override
+    public void onListenerDisconnected() {
+        // Re-arm the moment the system rebinds us.
+        kick();
+    }
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null || sbn.getPackageName() == null) return;
@@ -73,6 +125,22 @@ public class MediaWatchService extends NotificationListenerService {
             Watched.init(this);
         } catch (Throwable t) {
             Report.err("mediawatch", "init failed", t);
+        }
+        // The FGS notification MUST go to an existing channel. Posting to a
+        // channel that was never created makes the system throw
+        // CannotPostForegroundServiceNotificationException asynchronously on
+        // the main thread (a try/catch cannot catch it) and the process dies.
+        try {
+            if (Build.VERSION.SDK_INT >= 26 && getSystemService(
+                    android.app.NotificationManager.class) != null) {
+                android.app.NotificationChannel ch = new android.app.NotificationChannel(
+                        DIAG_CH, "MX-MAL watch progress",
+                        android.app.NotificationManager.IMPORTANCE_LOW);
+                ch.setShowBadge(false);
+                getSystemService(android.app.NotificationManager.class).createNotificationChannel(ch);
+            }
+        } catch (Throwable t) {
+            Report.err("mediawatch", "channel creation failed", t);
         }
     }
 
@@ -96,6 +164,8 @@ public class MediaWatchService extends NotificationListenerService {
                 found = true;
                 sample(c);
             }
+            if (!found) diag("no active MX media session (MX is not playing, or it "
+                    + "publishes no session) - nothing to record");
             return found;
         } catch (SecurityException se) {
             // Notification access not granted yet — nothing else to do.
@@ -107,8 +177,15 @@ public class MediaWatchService extends NotificationListenerService {
         }
     }
 
-    private void sample(MediaController c) {
-        try {
+    /** One throttled diagnostic line so a silent failure can never happen again. */
+    private void diag(String msg) {
+        long now = System.currentTimeMillis();
+        if (now - lastDiag < DIAG_MS) return;
+        lastDiag = now;
+        Report.info("mediawatch", msg);
+    }
+
+    private void sample(MediaController c) {        try {
             PlaybackState st = c.getPlaybackState();
             if (st == null) return;
             MediaMetadata md = c.getMetadata();
@@ -117,7 +194,13 @@ public class MediaWatchService extends NotificationListenerService {
             if (title == null && md != null) {
                 title = md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
             }
-            if (title == null || title.isEmpty() || dur <= 0) return;
+            if (title == null || title.isEmpty() || dur <= 0) {
+                // Silent here used to mean "no watch progress anywhere and no
+                // explanation"; say it once every few minutes instead.
+                diag("MX session present but unreadable: title=" + title + " dur="
+                        + dur + " state=" + (st == null ? "null" : st.getState()));
+                return;
+            }
 
             boolean playing = st.getState() == PlaybackState.STATE_PLAYING;
             long live = MediaWatch.livePosition(st.getPosition(), st.getLastPositionUpdateTime(),
