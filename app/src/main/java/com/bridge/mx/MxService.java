@@ -508,9 +508,7 @@ public class MxService extends AccessibilityService {
                 // override it (label + grey tag can coexist).
                 if ("finished".equals(verdict)) next = "finished";
             } else {
-                // Label-less row: the ink colour IS the verdict — grey =
-                // finished, blue = last played, dark indigo = no label.
-                next = verdict;
+                next = applyInkVerdict(r, verdict);
             }
             if (!next.equals(r.state)) {
                 r.state = next;
@@ -526,6 +524,37 @@ public class MxService extends AccessibilityService {
             updateNotification(null);
             Log.i(TAG, "classify: verdicts updated");
         }
+    }
+
+    /**
+     * Ink verdict for a label-less row, WITH corroboration required.
+     *
+     * <p>This is the rule the user has effectively demanded four times. A
+     * positive verdict read from ink alone — no "Played ..." label, no playback
+     * percent — has produced a false "finished" on 2026-10-13 (grey = the real
+     * finished tag), 2026-10-14 (untagged ink), 2026-11-12 (Tantei S2 ep6) and
+     * again on 2026-11-13 06:36, when Tantei S2 ep6 was pushed to MAL 6 with
+     * {@code state=finished, playedAt="", watchedPct=-1}. Every genuinely played
+     * row in the store carries a {@code playedAt} label; the two that did not
+     * were exactly the false ones.
+     *
+     * <p>MX's own list is the source of truth for "was it touched" and it says
+     * so in text. So: a positive ink verdict is accepted only when the row has
+     * that label or the sampler saw it play. A non-positive verdict ("none" /
+     * "new" / unclassifiable) is always accepted — it can only ever withhold a
+     * push, never create one.
+     *
+     * @return the state the row should take
+     */
+    static String applyInkVerdict(Store.Row r, String verdict) {
+        if (verdict == null) return r.state;
+        boolean positive = "finished".equals(verdict) || "watching".equals(verdict);
+        if (!positive) return verdict; // "none"/"new": safe, cannot create progress
+        boolean corroborated =
+                (r.playedAt != null && !r.playedAt.isEmpty()) // MX's own label
+                        || r.watchedPct >= 0                        // the sampler saw it
+                        || "finished".equals(r.state);             // already established
+        return corroborated ? verdict : r.state;
     }
 
     /**

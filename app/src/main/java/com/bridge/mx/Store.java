@@ -350,6 +350,57 @@ public class Store {
         }
     }
 
+    /**
+     * One-time repair of rows that carry a POSITIVE watch state with nothing
+     * behind it (2026-11-13).
+     *
+     * <p>An ink colour read alone — no MX "Played ..." label, no playback
+     * percent, no ledger entry — has been accepted as "finished" four separate
+     * times and each time it pushed an episode the user never watched to MAL.
+     * The live case: "Tantei wa Mou, Shindeiru. Season 2" ep6 was stored as
+     * {@code state=finished, playedAt="", watchedPct=-1} and pushed
+     * {@code watching|6} at 06:36 while MAL held the user's 5.
+     *
+     * <p>Such a row is reset to {@code present} (a file on disk, not watched) so
+     * it can only be re-established by real evidence. Rows that DO carry a label
+     * or a percent are untouched, so this can never remove genuine progress.
+     *
+     * @return number of rows repaired
+     */
+    static synchronized int healUncorroborated() {
+        int n = 0;
+        for (Row r : rows.values()) {
+            boolean positive = "finished".equals(r.state) || "watching".equals(r.state);
+            if (!positive) continue;
+            boolean corroborated =
+                    (r.playedAt != null && !r.playedAt.isEmpty())   // MX's own label
+                            || r.watchedPct >= 0                         // the sampler saw it
+                            || watchedInLedger(r.parsedTitle);           // recorded percent
+            if (!corroborated) {
+                r.state = "present";
+                n++;
+            }
+        }
+        if (n > 0) {
+            save();
+            Report.info("store", "healed " + n
+                    + " row(s) whose watch state had no evidence behind it");
+        }
+        return n;
+    }
+
+    /** True when the watched ledger holds ANY episode of this series. */
+    private static boolean watchedInLedger(String parsedTitle) {
+        if (parsedTitle == null || parsedTitle.isEmpty()) return false;
+        Map<String, Integer> led = Watched.snapshot();
+        if (led == null || led.isEmpty()) return false;
+        String pre = Watched.norm(parsedTitle) + "|";
+        for (String k : led.keySet()) {
+            if (k.startsWith(pre)) return true;
+        }
+        return false;
+    }
+
     private static void load() {
         try {
             String mc = prefs.getString("malcur", "");
@@ -394,6 +445,7 @@ public class Store {
                 rows.put(r.key, r);
             }
             dedupe();
+            healUncorroborated();
             // Restore the Download allowlist so the observation gate works
             // before the first scan of this process.
             String lk = prefs.getString("libkeys", "");
