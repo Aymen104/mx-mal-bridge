@@ -30,15 +30,29 @@ import java.util.TreeMap;
  * Suikoden, FX Senshi Kurumi-chan, Tsuihou sareta Tensei Juukishi, Hotaru no
  * Yomeiri, Sora wa Akai Kawa no Hotori, Shuiro no Kamen) were all shows the
  * user was actively watching; MX simply paints no tag on a row it is mid-way
- * through. The repair is therefore narrowed to its one PROVEN fabrication:
- * a {@code fromLib} row — one the MX list reader never saw, whose only claim
- * to progress was file presence (the "downloaded is not watched" case).
+ * through.
+ *
+ * <p>IMPORTANT (2026-11-13 — the worst one): "pushed ({@code applied != ""}) +
+ * library-only ({@code fromLib}) + no evidence" was a THIRD false signature.
+ * {@code fromLib} only means the MX list reader did not see that row in that
+ * pass — it is staleness, not fraud. After v1.5.21's offline-idle gate made MX
+ * reads rarer, 44 genuinely tracked series matched it and the daily auto-repair
+ * DELETEd their {@code watching|N} entries from the user's account in ~14 s
+ * (134 -> 90 watching entries; all 44 restored by hand from the log). The rule
+ * is now the single fabrication that was ever proven to be ours, and every
+ * withdrawal is additionally capped per run.
  *
  * <ul>
- *   <li>Only series whose rows are STILL the artifact signature qualify:
- *       pushed ({@code applied != ""}), library-only ({@code fromLib}), with
- *       no playback evidence (row watched %, watched ledger, real tag or a
- *       last-played date). An MX-observed row is never a candidate.
+ *   <li>Only a {@code plan_to_watch|0} write qualifies: v1.5.17 pushed that
+ *       plan for every downloaded-but-unwatched series, which REGISTERED the
+ *       show on the user's list. It is the one fabrication we can prove, and
+ *       {@link #decide} still requires MAL to hold exactly that value with no
+ *       user score.
+ *   <li>A {@code watching|N} or {@code completed|N} write is NEVER withdrawn:
+ *       MAL holding exactly our value cannot distinguish our idempotent
+ *       rewrite from the user's own entry (2026-11-13).
+ *   <li>Hard per-run cap {@link #MAX_REVERTS}: even a future bad heuristic can
+ *       delete at most that many entries, and says so in the log.
  *   <li>Included since v1.5.19 (2026-11-08): a {@code plan_to_watch|0} write.
  *       v1.5.17 pushed that plan for every downloaded-but-unwatched series,
  *       which REGISTERED the show on the user's list. The signature is ours
@@ -73,6 +87,25 @@ public final class MalRepair {
 
     /** Auto-cooldown between repair passes. */
     static final long COOLDOWN_MS = 86_400_000L;
+
+    /**
+     * Hard cap on withdrawals per pass.
+     *
+     * <p>Learned 2026-11-13: one bad heuristic signature deleted 44 entries in
+     * a single daily pass. No heuristic may ever be able to touch more than
+     * this much of the user's list unattended; the rest is left for a human.
+     */
+    static final int MAX_REVERTS = 5;
+
+    /**
+     * The only pushed signature we may ever withdraw: a {@code plan_to_watch|0}
+     * registration, which is the one fabrication ever PROVEN to be the bridge's
+     * own. Everything else (watching / completed progress) is the user's
+     * proof-of-watch and is left untouched.
+     */
+    static boolean isWithdrawableWrite(String applied) {
+        return "plan_to_watch|0".equals(applied);
+    }
 
     private static final String NAME = "mxrepair";
 
@@ -119,6 +152,13 @@ public final class MalRepair {
         }
         if (curScore > 0) return Action.KEEP_RATED;
         if (pushed == null || pushed.isEmpty()) return Action.KEEP_UNKNOWN;
+        // 2026-11-13 (the 44 deleted "watching" entries): ONLY a plan_to_watch
+        // registration - the one fabrication ever PROVEN to be ours - may be
+        // withdrawn. A "watching|N"/"completed|N" write is the user's
+        // proof-of-watch: MAL holding exactly our value cannot distinguish our
+        // idempotent rewrite from the user's own entry, so it is NOT evidence
+        // the entry is junk. Hands off, always.
+        if (!isWithdrawableWrite(pushed)) return Action.KEEP_UNKNOWN;
         String[] p = pushed.split("\\|", -1);
         if (!c[0].equals(p[0])) return Action.KEEP_MOVED;
         if (p.length >= 2) {
@@ -133,9 +173,18 @@ public final class MalRepair {
     }
 
     /**
-     * Is this row the artifact signature? Pushed, a library-only row
-     * ({@code fromLib}: never seen by the MX list reader), with no playback
-     * evidence on the row itself.
+     * Is this row the artifact signature? Since 2026-11-13 that means ONE
+     * thing only: a {@code plan_to_watch|0} write on a library-only row.
+     *
+     * <p><b>Why it was narrowed.</b> The previous rule accepted ANY non-empty
+     * {@code applied} on a library-only ({@code fromLib}) evidence-free row.
+     * But {@code fromLib} only means "the MX list reader did not see this row
+     * in this pass" — it is a <em>staleness</em> flag, not evidence of
+     * fabrication. After v1.5.21's offline-idle gate made MX reads rarer,
+     * 44 genuinely tracked series matched that signature in a single daily
+     * repair pass and their {@code watching|N} entries were DELETEd from the
+     * user's MyAnimeList (2026-11-13 01:06). The account went 134 -> 90
+     * watching entries; all 44 had to be restored by hand from the log.
      *
      * <p>An MX-observed row ({@code !fromLib}) is NEVER an artifact: the MX
      * list is the user's own playing record, and an untagged ink simply means
@@ -152,15 +201,14 @@ public final class MalRepair {
      */
     static boolean isArtifact(Store.Row r, Map<String, Integer> ledger) {
         if (r.matchId <= 0) return false;
-        if (r.applied == null || r.applied.isEmpty()) return false;
-        // A plan_to_watch|0 write is a fabrication too: v1.5.17 registered every
-        // downloaded-but-unwatched series on MAL as "Plan to Watch" (2026-11-08).
-        // It counts as an artifact UNLESS it is the signature the repair itself
-        // writes when it neutralizes an already-withdrawn row (state="none") —
-        // those rows were handled and must not become candidates again. The
-        // durable guard against re-withdrawing is the per-series shield
-        // ("r:<id>") written by revert(); repair() also skips shielded ids.
-        if ("plan_to_watch|0".equals(r.applied) && "none".equals(r.state)) return false;
+        // The one PROVEN fabrication (v1.5.17, 2026-11-08): writing
+        // plan_to_watch|0 REGISTERED a downloaded, never-played series on the
+        // user's list. Everything else we ever pushed was backed by real watch
+        // evidence, so "applied != ''" is no longer a signature of anything.
+        if (!"plan_to_watch|0".equals(r.applied)) return false;
+        // The repair's own neutralization writes state="none" + plan_to_watch|0
+        // on an already-withdrawn row: bookkeeping, not a new fabrication.
+        if ("none".equals(r.state)) return false;
         if (r.watchedPct >= 0) return false;                        // real playback
         if (ColorClassify.hasTag(r.rgb)) return false;              // real tag -> genuine
         if (r.playedAt != null && !r.playedAt.isEmpty()) return false; // MX last-played
@@ -328,7 +376,7 @@ public final class MalRepair {
             // treated as "absent" (that would be a wrong verdict either way).
             return new Result(false, "mal repair: list unavailable (incomplete read)");
         }
-        int reverted = 0, keptRated = 0, keptMoved = 0, absent = 0, keptUnknown = 0;
+        int reverted = 0, keptRated = 0, keptMoved = 0, absent = 0, keptUnknown = 0, capped = 0;
         for (int id : ids) {
             String pushed = pushedApplied(rows, id);
             Action a = decide(cur.get(id), pushed);
@@ -336,6 +384,15 @@ public final class MalRepair {
                     + " mal=" + cur.get(id) + " -> " + a);
             switch (a) {
                 case REVERT:
+                    if (reverted >= MAX_REVERTS) {
+                        // Safety valve: never let a single pass touch more than
+                        // MAX_REVERTS of the user's list, whatever the rule says.
+                        capped++;
+                        Report.err("malrepair", "withdrawal cap of " + MAX_REVERTS
+                                + " reached; series " + id
+                                + " left on MAL for manual review");
+                        break;
+                    }
                     if (!dry) revert(c, id, pushed);
                     reverted++;
                     break;
@@ -355,7 +412,8 @@ public final class MalRepair {
         }
         String line = "mal repair: " + (dry ? "DRY " : "") + reverted + " reverted, "
                 + keptRated + " kept-rated, " + keptMoved + " kept-user-moved, "
-                + absent + " absent, " + keptUnknown + " unknown";
+                + absent + " absent, " + keptUnknown + " unknown"
+                + (capped > 0 ? ", " + capped + " capped" : "");
         Report.info("malrepair", line);
         if (!dry) p.edit().putLong("last_run", now).apply();
         return new Result(true, line);
