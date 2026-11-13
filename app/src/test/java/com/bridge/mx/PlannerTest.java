@@ -84,6 +84,21 @@ public class PlannerTest {
         assertEquals("watching", r.planStatus);
         assertEquals(6, r.planEps);
         assertTrue(r.planText.contains("MAL is ahead"));
+        // ...but it is a HOLD: MAL already has the number, so nothing is written
+        // and `applied` is never re-stamped with a value we cannot support.
+        assertTrue(r.hold);
+        assertFalse(PushGate.needsPush(r));
+    }
+
+    @Test
+    public void aStaleHoldNeverBlocksTheNextPlan() {
+        // The flag is recomputed every rebuild: a row held today must still push
+        // tomorrow when new evidence arrives.
+        Store.Row r = row("t-stale-hold", "Show Six EP 06", "finished", 12);
+        r.hold = true;
+        Planner.rebuild();
+        assertFalse("no MAL snapshot -> no clamp, no hold", r.hold);
+        assertTrue(PushGate.needsPush(r));
     }
 
     @Test

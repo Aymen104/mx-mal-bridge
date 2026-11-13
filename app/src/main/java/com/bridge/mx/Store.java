@@ -49,6 +49,17 @@ public class Store {
         public int planEps = -1;
         public String planText = "";
         public String applied = "";    // "status|eps" last pushed to MAL
+    /**
+     * True when the plan's only basis is "MAL already holds this number".
+     *
+     * <p>Such a row is a HOLD, not a write: 2026-11-13 the app re-stamped
+     * {@code applied=watching|6} for numbers its own evidence could not support
+     * (Sekai Saikyou no Majo, Sasaki to Pii-chan, Tsuihou Cheat Fuyo all got
+     * {@code watching|6} 90 seconds after the ledger purge wiped the proof),
+     * which made it the author of those numbers forever. A held row is left
+     * exactly as MAL has it — never walked backwards, never re-written.
+     */
+    public boolean hold = false;
         public String matchTried = ""; // parsedTitle we already searched for
         public int watchedPct = -1;    // max % of the episode played in MX (>=95 finished)
         public String playedAt = "";   // MX's "last played" label, e.g. "Played 1 day ago"
@@ -149,6 +160,11 @@ public class Store {
     }
 
     /** Drop all observed rows (test/maintenance helper; listeners untouched). */
+    /** The stored row for a key, or null (test/QA helper). */
+    public static synchronized Row rowByKey(String key) {
+        return rows.get(key);
+    }
+
     public static synchronized void clear() {
         rows.clear();
         dirty();
@@ -300,7 +316,29 @@ public class Store {
             }
         }
         rows.put(r.key, r);
+        // A NEW episode row of a series that is already matched must inherit
+        // that match. Rows are keyed per (series, episode) but matching is per
+        // SERIES, so without this a freshly observed episode stays matchId=-1
+        // forever: the group is already "tried", so the pipeline never searches
+        // for it again, and its play state never reaches MAL (2026-11-13: 22
+        // "Gin S1" rows for eps 51-75 sat unmatched while ep76 was matched to
+        // 918 - everything watched before ep76 was invisible to the planner).
+        if (r.matchId <= 0) inheritSeriesMatch(r);
         dirty();
+    }
+
+    /** Copy an existing sibling row's MAL match onto an unmatched row. */
+    private static void inheritSeriesMatch(Row r) {
+        if (r.parsedTitle == null || r.parsedTitle.isEmpty()) return;
+        for (Row o : rows.values()) {
+            if (o == r || o.matchId <= 0) continue;
+            if (o.parsedTitle == null || !o.parsedTitle.equals(r.parsedTitle)) continue;
+            r.matchId = o.matchId;
+            r.matchTitle = o.matchTitle;
+            r.numEp = o.numEp;
+            if (r.matchTried.isEmpty()) r.matchTried = o.matchTried;
+            return;
+        }
     }
 
     /**
@@ -339,6 +377,7 @@ public class Store {
                 o.put("planEps", r.planEps);
                 o.put("planText", r.planText);
                 o.put("applied", r.applied);
+            o.put("hold", r.hold);
                 o.put("matchTried", r.matchTried);
                 o.put("watchedPct", r.watchedPct);
                 o.put("playedAt", r.playedAt);
@@ -401,6 +440,31 @@ public class Store {
         return false;
     }
 
+    /**
+     * Give every unmatched row the match of any matched sibling of the same
+     * series (2026-11-13). Rows are keyed per (series, episode), so a series
+     * matched before a new episode was observed leaves that episode unmatched
+     * for good: the pipeline sees the title as already "tried" and never
+     * searches again, so its watch state never reaches MAL.
+     *
+     * @return number of rows linked
+     */
+    static synchronized int linkSeriesMatches() {
+        int n = 0;
+        for (Row r : rows.values()) {
+            if (r.matchId > 0) continue;
+            int before = r.matchId;
+            inheritSeriesMatch(r);
+            if (r.matchId != before) n++;
+        }
+        if (n > 0) {
+            save();
+            Report.info("store", "linked " + n
+                    + " row(s) to their series' existing MAL match");
+        }
+        return n;
+    }
+
     private static void load() {
         try {
             String mc = prefs.getString("malcur", "");
@@ -438,6 +502,7 @@ public class Store {
                 r.planEps = o.optInt("planEps", -1);
                 r.planText = o.optString("planText", "");
                 r.applied = o.optString("applied", "");
+            r.hold = o.optBoolean("hold", false);
                 r.matchTried = o.optString("matchTried", "");
                 r.watchedPct = o.optInt("watchedPct", -1);
                 r.playedAt = o.optString("playedAt", "");
@@ -445,6 +510,7 @@ public class Store {
                 rows.put(r.key, r);
             }
             dedupe();
+            linkSeriesMatches();
             healUncorroborated();
             // Restore the Download allowlist so the observation gate works
             // before the first scan of this process.

@@ -30,6 +30,10 @@ final class PushGate {
         if (r.matchId <= 0) return false;
         if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
         if ("plan_to_watch".equals(r.planStatus)) return false;
+        // A "MAL is ahead" hold: the number is already on the user's list, so a
+        // write would be a no-op that re-stamps `applied` and claims authorship
+        // of a value the local evidence does not support (2026-11-13).
+        if (r.hold) return false;
         return !(r.planStatus + "|" + r.planEps).equals(r.applied);
     }
 }

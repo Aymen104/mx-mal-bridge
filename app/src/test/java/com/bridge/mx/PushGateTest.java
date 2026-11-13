@@ -19,6 +19,21 @@ public class PushGateTest {
     }
 
     @Test
+    public void aHoldIsNeverPushed() {
+        // "MAL is ahead": the number is already on the user's list, so a write is
+        // a no-op that re-stamps `applied` and claims authorship of a value the
+        // local evidence does not support (2026-11-13).
+        Store.Row r = new Store.Row();
+        r.matchId = 10;
+        r.planStatus = "watching";
+        r.planEps = 6;
+        r.applied = "watching|5";
+        assertTrue("a real evidence-backed plan is sent", PushGate.needsPush(r));
+        r.hold = true;
+        assertFalse("the same plan, held for MAL, is not", PushGate.needsPush(r));
+    }
+
+    @Test
     public void matchedPlanThatWasNeverPushedIsSent() {
         assertTrue(PushGate.needsPush(row("watching", 5, 42, "")));
         assertTrue(PushGate.needsPush(row("completed", 12, 42, "")));

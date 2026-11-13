@@ -83,6 +83,7 @@ public class Planner {
             r.ep = p.ep;
 
             r.planStatus = "";
+            r.hold = false; // recomputed every rebuild; never let a stale hold block a real push
             r.planEps = -1;
             r.planText = "";
         }
@@ -265,9 +266,18 @@ public class Planner {
                     if (below) {
                         rep.planStatus = mst;
                         rep.planEps = mw;
+                        // A HOLD, not a write: MAL already has this number, so
+                        // writing it again only re-stamps `applied` and makes the
+                        // bridge the author of a number its own evidence cannot
+                        // support (2026-11-13: "Sekai Saikyou no Majo",
+                        // "Sasaki to Pii-chan" and "Tsuihou Cheat Fuyo" all got
+                        // watching|6 that way, 90 s after the ledger purge wiped
+                        // the proof, and then the repair deleted those entries).
+                        // Leaving it alone still never walks the user backwards.
+                        rep.hold = true;
                         rep.planText = "\u2192 kept, " + mw
                                 + (malTotal > 0 ? "/" + malTotal : "")
-                                + " (MAL is ahead)";
+                                + " (MAL is ahead - left untouched)";
                     }
                 }
             }
