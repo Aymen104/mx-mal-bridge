@@ -1235,6 +1235,13 @@ public class MxService extends AccessibilityService {
         if (r.planStatus.isEmpty() || r.matchId <= 0) return false;
         if ("completed".equals(r.planStatus) && r.planEps < 0) return false;
         if ("plan_to_watch".equals(r.planStatus)) return false;
+        // A "MAL is ahead" HOLD must not be re-written by the background path:
+        // MAL already has the number, so writing it only re-stamps `applied`
+        // and claims authorship of a value our evidence does not support. This
+        // is the same rule PushGate.needsPush() enforces for the UI path - the
+        // background path needed it too (2026-11-13 08:59: it wrote
+        // Gin S1 -> watching|76 while the row held hold=true).
+        if (r.hold) return false;
         return true;
     }
 
