@@ -26,6 +26,14 @@ public final class Retention {
 
     /** One week, in milliseconds. */
     public static final long WEEK_MS = 7L * 24 * 60 * 60 * 1000;
+    /**
+     * Keep the per-episode watched ledger across a purge (2026-11-13).
+     *
+     * <p>It is watch evidence, not UI history: MX's own list can only say
+     * "last played" (worth N-1), so without the ledger an episode the user
+     * finished reads as still-in-progress and MAL is understated by one.
+     */
+    public static final boolean KEEP_LEDGER = true;
     private static final String PREF = "mxmeta";
     private static final String KEY = "last_purge";
 
@@ -77,18 +85,29 @@ public final class Retention {
     }
 
     /**
-     * Purge now: wipe rows + MAL cache + watched ledger, then reset the clock.
+     * Purge now: wipe rows + the cached MAL snapshot, then reset the clock.
+     *
+     * <p><b>2026-11-13: the watched ledger is NO LONGER cleared.</b> It used to
+     * be, and that silently destroyed watch evidence: "Tensei shitara Ken
+     * deshita II ep7" was watched to 100% (the app's own log proves it), the
+     * weekly purge wiped both the row and the ledger entry 16 hours later, and
+     * the only surviving signal was MX's list, which records "last played" —
+     * i.e. <em>in progress</em>, worth N-1. MAL was therefore left at 6 for an
+     * episode the user finished. The ledger is a few hundred tiny strings and
+     * is the ONLY durable per-episode evidence the bridge has, so it is kept;
+     * the Store rows and the MAL snapshot are the "history" the purge clears.
      *
      * @return number of Store rows removed
      */
     public static synchronized int purgeNow(Context ctx) {
         if (prefs == null) init(ctx);
         int n = Store.wipe();
-        Watched.clear();
+        if (!KEEP_LEDGER) Watched.clear();
         lastPurge = System.currentTimeMillis();
         if (prefs != null) prefs.edit().putLong(KEY, lastPurge).apply();
         Store.notifyChanged();
-        Report.info("retention", "weekly purge: " + n + " rows cleared");
+        Report.info("retention", "weekly purge: " + n + " rows cleared"
+                + (KEEP_LEDGER ? " (watched ledger kept: it is watch evidence)" : ""));
         return n;
     }
 

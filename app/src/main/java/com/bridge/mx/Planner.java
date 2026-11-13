@@ -231,7 +231,20 @@ public class Planner {
             // MAL is the source of truth: a computed plan must never read lower
             // than what the user's own list already records. Clamp it (and say
             // so) so the bridge only ever advances, never walks them backwards.
-            String malNow = Store.malCur(groupMatchId);
+            //
+            // 2026-11-13: the clamp must NEVER MANUFACTURE progress. It used to
+            // lift a zero-evidence row (a downloaded file MX never showed played)
+            // to "watching|MAL's number", which the push path then WROTE to MAL
+            // and recorded in `applied` - i.e. the bridge credited an episode it
+            // had no evidence for and signed its own name to it. That is exactly
+            // how "Tensei shitara Ken deshita II" (MAL 53913) came to read
+            // watching|6 on the strength of the unwatched الحلقة 6 file alone.
+            // Now the clamp only holds a plan we already computed from evidence:
+            // with no evidence the row stays unplanned and NOTHING is written
+            // (MAL keeps its number untouched, which still never walks backwards).
+            boolean hadEvidencePlan = rep.planStatus != null && !rep.planStatus.isEmpty()
+                    && !"plan_to_watch".equals(rep.planStatus);
+            String malNow = hadEvidencePlan ? Store.malCur(groupMatchId) : null;
             if (malNow != null) {
                 int bar = malNow.indexOf('|');
                 if (bar > 0) {

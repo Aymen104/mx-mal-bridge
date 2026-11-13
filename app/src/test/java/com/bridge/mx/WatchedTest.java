@@ -68,6 +68,22 @@ public class WatchedTest {
     }
 
     @Test
+    public void recordedPercentIsWatchEvidenceAndSurvives() {
+        // 2026-11-13: this is the evidence the weekly retention purge used to
+        // destroy. Without it MX's own list ("last played" = in progress, N-1)
+        // understated an episode the user finished, and MAL stayed at 6 for
+        // "Tensei shitara Ken deshita II" while ep7 was watched to 100%.
+        String s = "Tensei shitara Ken deshita II";
+        Watched.record(s, 7, 100);
+        assertEquals(100, Watched.percent(s, 7));
+        assertTrue(Watched.finished(s, 7));
+        Watched.clear();
+        Watched.record(s, 7, 100);
+        Watched.record(s, 7, 60); // a smaller re-read must not erase it
+        assertEquals(100, Watched.percent(s, 7));
+    }
+
+    @Test
     public void rejectsInvalid() {
         assertFalse(Watched.record("", 1, 50));
         assertFalse(Watched.record("Reject Series", 1, -1));

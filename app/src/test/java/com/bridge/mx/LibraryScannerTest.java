@@ -104,4 +104,15 @@ public class LibraryScannerTest {
     public void nullPathIsRejected() {
         assertFalse(LibraryScanner.isDownloadRoot(null, ""));
     }
+
+    @Test
+    public void bareEMarkerIsAnEpisodeFile() {
+        // 2026-11-13: "E07" (one letter) was not recognised here, so the file the
+        // user watched to 100% never even entered the library scan.
+        assertTrue(LibraryScanner.hasEpisodeMarker(
+                "Tensei shitara Ken deshita II E07.1080p.BILI.WEB-DL.AAC2.0.H.264-VARYG.mkv"));
+        assertTrue(LibraryScanner.hasEpisodeMarker("Some Show E03 [1080p].mkv"));
+        assertFalse(LibraryScanner.hasEpisodeMarker("Some Show WEB-DL 1080p.mkv"));
+        assertFalse(LibraryScanner.hasEpisodeMarker("Mahmoud Al Husary - Surah Yusuf.mp3"));
+    }
 }

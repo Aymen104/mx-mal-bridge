@@ -26,8 +26,13 @@ public class EpisodeParser {
             Pattern.compile("(?i)\\((?=[^)]*(?:480|540|720|1080|1440|2160))[^)]*\\)");
     private static final Pattern RES =
             Pattern.compile("(?i)\\b(240|360|480|540|720|1080|1440|2160)p\\b");
+    // The optional trailing channel spec is what turns "AAC2.0"/"AC35.1" into a
+    // whole-token match; without it the "2.0" survived and kept two spellings
+    // of one series apart (2026-11-13).
     private static final Pattern TAGS =
-            Pattern.compile("(?i)\\b(x26[45]|h\\.?26[45]|hevc|avc|10bit|8bit|bdrip|webrip|web-?dl|hdtv|aac|ac3|eac3|dual\\s*audio|hdr|proper|repack)\\b");
+            Pattern.compile("(?i)\\b(x26[45]|h\\.?26[45]|hevc|avc|10bit|8bit|bdrip|webrip|web-?dl|hdtv|"
+                    + "aac|ac3|eac3|dts(-hd)?|flac|opus|truehd|dual\\s*audio|hdr|proper|repack)"
+                    + "(\\s*\\d+(\\.\\d+)?)?\\b");
     private static final Pattern SPACES = Pattern.compile("\\s{2,}");
 
     // Episode patterns, most specific first.
@@ -42,6 +47,32 @@ public class EpisodeParser {
             Pattern.compile("(?i)(?<![A-Za-z0-9])EP\\s*[-_.]?\\s*(\\d{1,4})(?!\\d)");
     private static final Pattern SXXEYY =
             Pattern.compile("(?i)(?<![A-Za-z0-9])S(\\d{1,2})\\s*[-_.]?\\s*E(\\d{1,3})(?!\\d)");
+    /**
+     * Bare {@code E<nn>} episode marker: {@code "Show E07.1080p..."} — the
+     * Bilibili/WEB-DL style that carries only ONE letter. Without this the
+     * number falls through to {@link #BARE}, which sets the episode but leaves
+     * the release junk in the title, so the row never matches the same series
+     * as the Arabic-subbed file and its progress is lost (2026-11-13:
+     * "Tensei shitara Ken deshita II E07...VARYG" watched to 100% never reached
+     * MAL 53913, which stayed at 6).
+     *
+     * <p>Placed AFTER {@link #SXXEYY} so "S01E05" keeps its season+episode form.
+     */
+    private static final Pattern EXX =
+            Pattern.compile("(?i)(?<![A-Za-z0-9])E\\s*[-_.]?\\s*(\\d{1,3})(?!\\d)");
+    /**
+     * Release-group / source tokens that are not part of a series name. They
+     * survive {@link #TAGS} (which only strips technical specs) and otherwise
+     * split one series into two keys.
+     */
+    // Lookarounds, not consumed separators: a consuming suffix eats the separator
+    // that belongs to the NEXT token and that token then survives (measured with
+    // "E07. .BILI. . . -VARYG" -> "E07 VARYG").
+    private static final Pattern GROUP =
+            Pattern.compile("(?i)(?:^|(?<=[\\s._\\-]))(bilibili|bili|varyg|subsplease|subs\\s*please|"
+                    + "erai-?raws|horriblesubs|judas|commie|golumpus|ffa|sally\\s*subs|animenp|"
+                    + "psh|rmx|rmteam|tortuga|dae|ak|sms|nf|amzn|dsnp|hulu|cr|funimation|hidive)"
+                    + "(?=[\\s._\\-]|$)");
     // Season_Episode without S/E letters: "Show 2_08", "Show 01_03"
     private static final Pattern SEASON_EP =
             Pattern.compile("(?<![A-Za-z0-9])(\\d{1,2})\\s*[_-]\\s*(\\d{1,3})(?!\\d)");
@@ -72,6 +103,9 @@ public class EpisodeParser {
         s = RES.matcher(s).replaceAll(" ");
         s = TAGS.matcher(s).replaceAll(" ");
         s = SPACES.matcher(s).replaceAll(" ").trim();
+        // Release-group / source tokens: strip them BEFORE episode detection so
+        // they cannot be read as a bare episode number.
+        s = GROUP.matcher(s).replaceAll(" ");
 
         int ep = -1;
 
@@ -87,6 +121,11 @@ public class EpisodeParser {
             s = s.replace(m.group(), " ");
         } else if ((m = SXXEYY.matcher(s)).find()) {
             ep = Integer.parseInt(m.group(2));
+            s = s.replace(m.group(), " ");
+        } else if ((m = EXX.matcher(s)).find() && ok(m.group(1))) {
+            // "Show E07..." - one letter, not "EP". Must precede the generic
+            // arms, otherwise BARE eats the number and leaves the junk behind.
+            ep = Integer.parseInt(m.group(1));
             s = s.replace(m.group(), " ");
         } else if ((m = TRAIL_END.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));

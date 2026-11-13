@@ -1,6 +1,7 @@
 package com.bridge.mx;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Before;
@@ -36,6 +37,53 @@ public class PlannerTest {
     public void reset() {
         Store.clear();
         Store.setMalCur(null); // clear the persisted MAL snapshot between tests
+    }
+
+    @Test
+    public void downloadedEpisodeNeverInheritsMalsNumber() {
+        // 2026-11-13 / MAL 53913 "Tensei shitara Ken deshita II": the only row
+        // left was الحلقة 6, state=present (never played, no playedAt, no ledger
+        // percent). The "MAL is ahead" clamp lifted that zero-evidence row to
+        // watching|6 and the push path WROTE it back - the bridge credited an
+        // episode it had no evidence for and signed it as its own. MAL's number
+        // is left exactly as it is; nothing is written.
+        Store.Row r = row("t-present-mal", "\u0627\u0644\u062d\u0644\u0642\u0629 6 Tensei Shitara Ken Deshita II",
+                "present", 12);
+        java.util.Map<Integer, String> mal = new java.util.HashMap<>();
+        mal.put(r.matchId, "watching|6");
+        Store.setMalCur(mal);
+        Planner.rebuild();
+        assertEquals("no evidence -> not planned as watched", "plan_to_watch", r.planStatus);
+        assertEquals(0, r.planEps);
+        assertFalse(PushGate.needsPush(r));
+    }
+
+    @Test
+    public void realEvidenceStillAdvancesPastMalsNumber() {
+        // The same series, but with the episode the user ACTUALLY watched:
+        // evidence must win over MAL's stale number, not inherit it.
+        Store.Row r = row("t-evidence-mal", "Tensei Shitara Ken Deshita II - 07", "finished", 12);
+        java.util.Map<Integer, String> mal = new java.util.HashMap<>();
+        mal.put(r.matchId, "watching|6");
+        Store.setMalCur(mal);
+        Planner.rebuild();
+        assertEquals("watching", r.planStatus);
+        assertEquals(7, r.planEps);
+        assertTrue(PushGate.needsPush(r));
+    }
+
+    @Test
+    public void clampStillHoldsAnEvidenceBackedPlan() {
+        // The clamp's real job (never walk the user backwards) still works when
+        // the plan came from evidence: ep5 finished, MAL already says 6.
+        Store.Row r = row("t-clamp", "Show Five EP 05", "finished", 12);
+        java.util.Map<Integer, String> mal = new java.util.HashMap<>();
+        mal.put(r.matchId, "watching|6");
+        Store.setMalCur(mal);
+        Planner.rebuild();
+        assertEquals("watching", r.planStatus);
+        assertEquals(6, r.planEps);
+        assertTrue(r.planText.contains("MAL is ahead"));
     }
 
     @Test

@@ -59,6 +59,11 @@ public class LibraryScanner {
             "الحلقة"
             + "|(?i)(?<![A-Za-z0-9])(episode|ep)\\s*[-_.]?\\s*\\d{1,4}(?!\\d)"
             + "|(?i)(?<![A-Za-z0-9])s\\d{1,2}\\s*[-_.]?\\s*e\\d{1,3}(?!\\d)"
+            // Bare "E<nn>": the Bilibili/WEB-DL style carries only ONE letter, so
+            // the "ep"/"sxxexx" arms above miss it and the file was silently
+            // skipped by the whole library scan (2026-11-13 - "Tensei shitara
+            // Ken deshita II E07...VARYG", watched to 100%, never appeared).
+            + "|(?i)(?<![A-Za-z0-9])e\\s*[-_.]?\\s*\\d{1,4}(?!\\d)"
             + "|(?<![A-Za-z0-9])(\\d{1,2})\\s*[_-]\\s*(\\d{1,3})(?!\\d)"
             + "|" + RELEASE_EP);
 

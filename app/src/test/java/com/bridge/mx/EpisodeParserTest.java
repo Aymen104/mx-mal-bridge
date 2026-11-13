@@ -118,4 +118,49 @@ public class EpisodeParserTest {
         assertEquals(12, p.ep);
         assertEquals("Youjo Shenki", p.title);
     }
+
+    // ------------------------------------------------- 2026-11-13 regressions
+
+    @Test
+    public void biliWebDlStyleSharesTheSeriesTitle() {
+        // "E07" (one letter) + BILI/VARYG junk used to fall through to the bare
+        // number arm: the episode was found but the junk stayed in the title, so
+        // this file and the Arabic-subbed file of the same series parsed to two
+        // DIFFERENT series keys and the watched episode never reached MAL
+        // (MAL 53913 stayed at 6 while ep7 was watched to 100%).
+        EpisodeParser.Parsed p = EpisodeParser.parse(
+                "Tensei shitara Ken deshita II E07.1080p.BILI.WEB-DL.AAC2.0.H.264-VARYG.mkv");
+        assertEquals(7, p.ep);
+        assertEquals("Tensei shitara Ken deshita II", p.title);
+    }
+
+    @Test
+    public void bothSpellingsOfOneSeriesAgree() {
+        // The Arabic release and the BILI release must produce the SAME series
+        // key, otherwise the two rows never aggregate into one progress write.
+        EpisodeParser.Parsed ar = EpisodeParser.parse(
+                "\u0627\u0644\u062d\u0644\u0642\u0629 6 Tensei shitara Ken deshita II.mp4");
+        EpisodeParser.Parsed raw = EpisodeParser.parse(
+                "Tensei shitara Ken deshita II E06.1080p.BILI.WEB-DL.AAC2.0.H.264-VARYG.mkv");
+        assertEquals("Tensei shitara Ken deshita II", ar.title);
+        assertEquals(ar.title, raw.title);
+        assertEquals(6, ar.ep);
+        assertEquals(6, raw.ep);
+    }
+
+    @Test
+    public void sxxeyyStillWinsOverTheSingleLetterArm() {
+        // Ordering guard: "S01E05" must keep the season+episode form.
+        EpisodeParser.Parsed p = EpisodeParser.parse("Some Show S01E05 1080p WEB-DL.mkv");
+        assertEquals(5, p.ep);
+        assertEquals("Some Show", p.title);
+    }
+
+    @Test
+    public void audioChannelsDoNotLeakIntoTheTitle() {
+        EpisodeParser.Parsed p = EpisodeParser.parse(
+                "Kanata Kara - 03 [Bilibili][AAC2.0][1080p].mkv");
+        assertEquals(3, p.ep);
+        assertEquals("Kanata Kara", p.title);
+    }
 }
