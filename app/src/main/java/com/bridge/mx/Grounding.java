@@ -19,9 +19,21 @@ public class Grounding {
 
     /** Build the strict, short prompt a small instruction model can follow. */
     public static String buildPrompt(String want, int ep, List<MatchBrain.Candidate> cands) {
+        return buildPrompt(want, ep, cands, -1, want);
+    }
+
+    /** Same prompt with the season/original filename evidence added when known. */
+    public static String buildPrompt(String want, int ep, List<MatchBrain.Candidate> cands,
+                                     int season, String originalTitle) {
         StringBuilder sb = new StringBuilder();
         sb.append("You match a downloaded anime file to the correct MyAnimeList entry.\n");
         sb.append("Title: ").append(want == null ? "" : want).append('\n');
+        if (originalTitle != null && !originalTitle.isEmpty() && !originalTitle.equals(want)) {
+            sb.append("On-device filename title: ").append(originalTitle).append('\n');
+        }
+        if (season > 0) {
+            sb.append("Season named by the file: ").append(season).append('\n');
+        }
         if (ep > 0) {
             sb.append("Highest episode number seen: ").append(ep)
                     .append(" (the correct entry must have at least this many episodes)\n");

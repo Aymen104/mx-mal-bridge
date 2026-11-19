@@ -16,6 +16,8 @@ public class EpisodeParser {
     public static class Parsed {
         public String title = "";
         public int ep = -1;   // 0 = movie / no numbering; -1 = not found
+        /** Season taken from SxxEyy / "2_08" / trailing "S2"; -1 when unstated. */
+        public int season = -1;
     }
 
     private static final Pattern EXT =
@@ -34,6 +36,17 @@ public class EpisodeParser {
                     + "aac|ac3|eac3|dts(-hd)?|flac|opus|truehd|dual\\s*audio|hdr|proper|repack)"
                     + "(\\s*\\d+(\\.\\d+)?)?\\b");
     private static final Pattern SPACES = Pattern.compile("\\s{2,}");
+    /** Quality words that survive TAGS but still split one series into two keys. */
+    private static final Pattern QUALITY =
+            Pattern.compile("(?i)(?<![A-Za-z0-9])(fhd|uhd|fullhd|hd|sd)(?![A-Za-z0-9])");
+    /**
+     * A season marker at the END of the parsed title ("Gintama S2", "Show Season 3").
+     * Recorded in {@link Parsed#season} but deliberately NOT removed from the
+     * title: the stored series key (and the watched ledger keyed on it) must stay
+     * byte-for-byte stable, and the matcher needs the marker as evidence.
+     */
+    private static final Pattern SEASON_TAIL =
+            Pattern.compile("(?i)(?<![A-Za-z0-9])(?:s|season)\\s*[-_.]?\\s*(\\d{1,2})(?!\\d)\\s*$");
 
     // Episode patterns, most specific first.
     // Lookbehind excludes letters AND digits (not underscore): filenames use
@@ -71,7 +84,8 @@ public class EpisodeParser {
     private static final Pattern GROUP =
             Pattern.compile("(?i)(?:^|(?<=[\\s._\\-]))(bilibili|bili|varyg|subsplease|subs\\s*please|"
                     + "erai-?raws|horriblesubs|judas|commie|golumpus|ffa|sally\\s*subs|animenp|"
-                    + "psh|rmx|rmteam|tortuga|dae|ak|sms|nf|amzn|dsnp|hulu|cr|funimation|hidive)"
+                    + "psh|rmx|rmteam|tortuga|dae|ak|sms|nf|amzn|dsnp|hulu|cr|funimation|hidive|"
+                    + "adn|jpn|msubs?(?:[-_.]?toonshub)?|toonshub|baha|abema|iqiyi|muse|anione|aniplus)"
                     + "(?=[\\s._\\-]|$)");
     // Season_Episode without S/E letters: "Show 2_08", "Show 01_03"
     private static final Pattern SEASON_EP =
@@ -102,6 +116,15 @@ public class EpisodeParser {
         s = RES_PAREN.matcher(s).replaceAll(" ");
         s = RES.matcher(s).replaceAll(" ");
         s = TAGS.matcher(s).replaceAll(" ");
+        s = QUALITY.matcher(s).replaceAll(" ");
+        s = SPACES.matcher(s).replaceAll(" ").trim();
+        // Normalise dot separators BEFORE group stripping and episode detection.
+        // Release names such as "Reincarnated.as.a.Sword.S02E08.REPACK.ADN..." use
+        // dots as spaces; leaving them in place hid the source tags from GROUP
+        // and left "Reincarnated.as.a.Sword. . . .ADN..." as the series key, so
+        // the same show had different keys per release group. TAGS/RES have
+        // already consumed dotted technical specs (AAC2.0, H.264) by this point.
+        s = s.replace('.', ' ');
         s = SPACES.matcher(s).replaceAll(" ").trim();
         // Release-group / source tokens: strip them BEFORE episode detection so
         // they cannot be read as a bare episode number.
@@ -119,7 +142,8 @@ public class EpisodeParser {
         } else if ((m = EP.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));
             s = s.replace(m.group(), " ");
-        } else if ((m = SXXEYY.matcher(s)).find()) {
+        } else if ((m = SXXEYY.matcher(s)).find() && ok(m.group(2))) {
+            p.season = clampSeason(m.group(1));
             ep = Integer.parseInt(m.group(2));
             s = s.replace(m.group(), " ");
         } else if ((m = EXX.matcher(s)).find() && ok(m.group(1))) {
@@ -130,7 +154,8 @@ public class EpisodeParser {
         } else if ((m = TRAIL_END.matcher(s)).find() && ok(m.group(1))) {
             ep = Integer.parseInt(m.group(1));
             s = s.replace(m.group(), " ");
-        } else if ((m = SEASON_EP.matcher(s)).find()) {
+        } else if ((m = SEASON_EP.matcher(s)).find() && ok(m.group(2))) {
+            p.season = clampSeason(m.group(1));
             ep = Integer.parseInt(m.group(2));
             s = s.replace(m.group(), " ");
         } else if ((m = TRAIL.matcher(s)).find() && ok(m.group(1))) {
@@ -150,6 +175,11 @@ public class EpisodeParser {
         s = TAIL_TRIM.matcher(s).replaceAll("");
         s = s.trim();
 
+        if (p.season < 0) {
+            Matcher t = SEASON_TAIL.matcher(s);
+            if (t.find()) p.season = clampSeason(t.group(1));
+        }
+
         p.title = s.isEmpty() ? raw.trim() : s;
         p.ep = ep;
         return p;
@@ -159,5 +189,12 @@ public class EpisodeParser {
     private static boolean ok(String digits) {
         if (NOT_EP.matcher(digits).matches()) return false;
         return Integer.parseInt(digits) <= 300;
+    }
+
+    /** Seasons 1..12; anything else is noise, not a season marker. */
+    private static int clampSeason(String digits) {
+        int n;
+        try { n = Integer.parseInt(digits); } catch (NumberFormatException e) { return -1; }
+        return (n >= 1 && n <= 12) ? n : -1;
     }
 }

@@ -316,9 +316,10 @@ public class MalClient {
     static String cleanQuery(String q) {
         if (q == null) return "";
         String s = q;
-        // Arabic-script tails from Arabic release sites ("... مترجم عربي").
-        s = s.replaceAll("[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF"
-                + "\\uFB50-\\uFDFF\\uFE70-\\uFEFF]+", " ");
+        // Arabic-script NOISE TAILS only ("... مترجم عربي"). Deleting the whole
+        // Arabic block made a genuine Arabic title ("هجوم العمالقة") collapse to
+        // an empty query, so MAL search silently returned nothing.
+        s = s.replaceAll("[\\s\\-–|]*(?:مترجم\\s*)?(?:عربي|العربي)\\s*$", " ");
         // season/episode markers that survived parsing ("S01E02", "1x02", "E02").
         s = s.replaceAll("(?i)\\bS\\d{1,2}\\s?E\\d{1,3}\\b", " ");
         s = s.replaceAll("(?i)\\b\\d{1,2}x\\d{1,3}\\b", " ");

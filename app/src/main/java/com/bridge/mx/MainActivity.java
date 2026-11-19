@@ -948,8 +948,9 @@ public class MainActivity extends Activity implements Store.Listener {
                 String query = Aliases.apply(r.parsedTitle);
                 JSONArray data = MalClient.search(this, query);
                 int results = data == null ? 0 : data.length();
+                int season = EpisodeParser.parse(r.title).season;
                 Matcher.Result b = Matcher.bestWithBrain(data, query, r.ep,
-                        LlmBrain.get(this));
+                        LlmBrain.get(this), season, r.parsedTitle);
                 r.matchTried = r.parsedTitle;
                 if (b != null) {
                     r.matchId = b.id;

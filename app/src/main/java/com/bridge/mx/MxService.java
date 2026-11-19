@@ -7,6 +7,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -141,6 +142,16 @@ public class MxService extends AccessibilityService {
         Store.init(this);
         Watched.init(this);
         Retention.init(this);
+        // One-time v1.5.28 migration: pre-season-guard matches ignored "S2" /
+        // "S02" in the filename and could land on the base series. Invalidate
+        // ONLY those contradictions so the season-aware matcher re-runs. Every
+        // other match, and all watch/ledger/progress data, is left untouched.
+        SharedPreferences cfg = getSharedPreferences("cfg", MODE_PRIVATE);
+        if (!cfg.getBoolean("season_mig_v128", false)) {
+            int n = Store.rematchSeasonSuspects();
+            cfg.edit().putBoolean("season_mig_v128", true).apply();
+            if (n > 0) Report.info("match", "season migration invalidated " + n + " row(s)");
+        }
         if (Retention.purgeIfDue(this)) {
             Report.info("service", "weekly retention purge ran on connect");
         }
@@ -1005,10 +1016,14 @@ public class MxService extends AccessibilityService {
                 Map<String, List<Store.Row>> byTitle = new LinkedHashMap<>();
                 for (Store.Row r : Store.all()) {
                     if (!actionable(r) || r.matchId >= 0 || r.parsedTitle.isEmpty()) continue;
-                    List<Store.Row> grp = byTitle.get(r.parsedTitle);
+                    // S01 and S02 files can share one parsed title; grouping them
+                    // would give both files the same MAL entry.
+                    int season = EpisodeParser.parse(r.title).season;
+                    String key = r.parsedTitle + (season > 0 ? "|S" + season : "");
+                    List<Store.Row> grp = byTitle.get(key);
                     if (grp == null) {
                         grp = new ArrayList<>();
-                        byTitle.put(r.parsedTitle, grp);
+                        byTitle.put(key, grp);
                     }
                     grp.add(r);
                 }
@@ -1026,15 +1041,19 @@ public class MxService extends AccessibilityService {
                     }
                     if (tried) continue;
                     attempts++;
-                    String query = Aliases.apply(title);
+                    String parsed = grp.get(0).parsedTitle;
+                    int season = EpisodeParser.parse(grp.get(0).title).season;
+                    String query = Aliases.apply(parsed);
                     int groupEp = -1;
                     for (Store.Row r : grp) {
                         if (r.ep > groupEp) groupEp = r.ep;
                     }
                     try {
                         JSONArray data = MalClient.search(this, query);
+                        // The alias may rewrite the search query, but the
+                        // matcher's season guard must read the original title.
                         Matcher.Result b = Matcher.bestWithBrain(data, query, groupEp,
-                                LlmBrain.get(this));
+                                LlmBrain.get(this), season, parsed);
                         for (Store.Row r : grp) r.matchTried = title;
                         if (b != null) {
                             for (Store.Row r : grp) {
@@ -1042,7 +1061,7 @@ public class MxService extends AccessibilityService {
                                 r.matchTitle = b.title;
                                 r.numEp = b.numEp;
                             }
-                            Aliases.learn(title, b.title);
+                            Aliases.learn(parsed, b.title);
                             AliasStore.persist(this);
                             matched += grp.size();
                             Log.i(TAG, "matched '" + title + "' -> " + b.title);

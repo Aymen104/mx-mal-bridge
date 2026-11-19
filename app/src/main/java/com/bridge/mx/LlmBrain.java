@@ -102,10 +102,16 @@ public class LlmBrain implements MatchBrain {
 
     @Override
     public int pick(String want, int ep, List<Candidate> cands) {
+        return pick(want, ep, cands, -1, want);
+    }
+
+    @Override
+    public int pick(String want, int ep, List<Candidate> cands,
+                    int season, String originalTitle) {
         if (cands == null || cands.isEmpty()) return -1;
         if (!ensureLoaded()) return -1;
         try {
-            String prompt = Grounding.buildPrompt(want, ep, cands);
+            String prompt = Grounding.buildPrompt(want, ep, cands, season, originalTitle);
             long t0 = System.currentTimeMillis();
             String out = llm.generateResponse(prompt);
             int idx = Grounding.parseChoice(out, cands.size());

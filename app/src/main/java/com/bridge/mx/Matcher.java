@@ -67,7 +67,20 @@ public class Matcher {
      */
     public static Result bestWithBrain(JSONArray data, String want, int ep,
                                        MatchBrain brain) throws Exception {
-        List<Scored> ranked = rank(data, want, ep);
+        return bestWithBrain(data, want, ep, brain, -1, want);
+    }
+
+    /**
+     * Same matcher, with the season evidence recovered from the FILENAME and the
+     * original on-device title kept separately from the (possibly alias-expanded)
+     * search query. The season decides which MAL entry is structurally valid;
+     * the original title is what the entry-marker guard must read, because the
+     * alias table must never hide "S2" from the guard.
+     */
+    public static Result bestWithBrain(JSONArray data, String want, int ep,
+                                       MatchBrain brain, int season, String guardTitle)
+            throws Exception {
+        List<Scored> ranked = rank(data, want, ep, season, guardTitle);
         if (ranked.isEmpty()) return null;
 
         // Only entries structurally compatible with what we see on disk are
@@ -77,7 +90,7 @@ public class Matcher {
         // how MyAnimeList's entry structure is enforced before the model votes.
         List<Scored> pool = new ArrayList<>();
         for (Scored sc : ranked) {
-            if (plausible(sc.r, want, ep)) pool.add(sc);
+            if (plausible(sc.r, guardTitle, ep, season)) pool.add(sc);
         }
         // The brain is only ever shown structurally-plausible candidates. If
         // none exist, the raw top is kept for the deterministic fallback below,
@@ -105,18 +118,18 @@ public class Matcher {
                 Result r = pool.get(i).r;
                 cands.add(new MatchBrain.Candidate(r.id, r.title, r.numEp, r.mediaType, r.status));
             }
-            int pick = brain.pick(want, ep, cands);
+            int pick = brain.pick(want, ep, cands, season, guardTitle);
             if (pick >= 0 && pick < n) return pool.get(pick).r;
         }
 
         // No brain (or it abstained): deterministic fallback, preferring a
         // structurally compatible entry over the raw top score (which may be
         // a sequel/movie/unaired entry).
-        if (ranked.get(0).s >= CONFIDENT && plausible(ranked.get(0).r, want, ep)) {
+        if (ranked.get(0).s >= CONFIDENT && plausible(ranked.get(0).r, guardTitle, ep, season)) {
             return ranked.get(0).r;
         }
         for (Scored sc : ranked) {
-            if (plausible(sc.r, want, ep) && sc.s >= ACCEPT) return sc.r;
+            if (plausible(sc.r, guardTitle, ep, season) && sc.s >= ACCEPT) return sc.r;
         }
         return ranked.get(0).s >= ACCEPT ? ranked.get(0).r : null;
     }
@@ -134,11 +147,38 @@ public class Matcher {
      * </ul>
      */
     static boolean plausible(Result r, String want, int ep) {
+        return plausible(r, want, ep, -1);
+    }
+
+    static boolean plausible(Result r, String guardTitle, int ep, int season) {
         if ("not_yet_aired".equals(r.status)) return false;
         if (ep > 0 && r.numEp > 0 && r.numEp < ep) return false;
         if (ep > 1 && "movie".equals(r.mediaType)) return false;
-        if (!hasEntryMarker(want) && hasEntryMarker(r.title)) return false;
+        if (seasonMismatch(guardTitle, r.title, season)) return false;
         return true;
+    }
+
+    /**
+     * A stored (or proposed) MAL entry disagrees with the season evidence from
+     * the filename. This is also the one-time migration test for old rows: a
+     * match that named the wrong season must be re-matched, never trusted.
+     *
+     * <p>Season values: -1 = no marker (base series), 0 = marked but unnumbered
+     * (movie/recap/trailing glyph), 1..12 = numbered season/part.
+     */
+    static boolean seasonMismatch(String fileTitle, String candTitle, int fileSeason) {
+        if (candTitle == null || candTitle.isEmpty()) return false;
+        int w = fileSeason > 0 ? fileSeason : seasonOf(fileTitle);
+        int c = seasonOf(candTitle);
+        if (w < 0) return c >= 0;             // no marker on file: reject any sequel
+        if (w == 0) return false;             // unnumbered marker present: no constraint
+        if (c == w) return false;             // exact season match
+        // A trailing glyph ("Gintama'", "Gintama°") is MAL's way of naming the
+        // next season, so it IS a valid answer for an S2 file. A side entry
+        // (OVA / movie / special / recap) is not, even though both score 0.
+        if (c == 0 && !sideEntry(candTitle)) return false;
+        if (w == 1 && c < 0) return false;    // S01 is normally the base MAL entry
+        return true;                          // base for S2+, or a different season
     }
 
     /**
@@ -146,23 +186,111 @@ public class Matcher {
      * base series apart from its continuations when the two share a name.
      */
     static boolean hasEntryMarker(String title) {
-        if (title == null || title.isEmpty()) return false;
-        return ENTRY_MARKER.matcher(title).find();
+        return seasonOf(title) >= 0;
     }
 
-    private static final java.util.regex.Pattern ENTRY_MARKER =
-            java.util.regex.Pattern.compile("(?i)"
-                    + "(?:\\b(?:2nd|3rd|4th|5th|6th|second|third|fourth|final)\\s+season\\b)"
-                    + "|(?:\\bseason\\s*[2-9]\\b)"
-                    + "|(?:\\bpart\\s*[2-9]\\b)"
-                    + "|(?:\\b(?:ii|iii|iv)\\b)"
-                    + "|(?:\\bmovie\\b)"
-                    + "|(?:\\bgekijouban\\b)"
-                    + "|(?:\\brecap\\b)"
-                    + "|(?:\\bgaiden\\b)"
-                    // MyAnimeList marks continuation series with a trailing glyph
-                    // ("Gintama'", "Gintama\u00b0"); it must lose to the base entry.
-                    + "|(?:['\u2019\u00b0\u2032\u2033]+\\s*$)");
+    /**
+     * Read a numbered season/part out of a title, or -1 for the base series.
+     * Handles the spellings that actually occur in MAL titles and on-device
+     * filenames, including the previously invisible "S2" and bare trailing "2".
+     */
+    static int seasonOf(String title) {
+        if (title == null || title.isEmpty()) return -1;
+        java.util.regex.Matcher m = S_SEASON.matcher(title);
+        if (m.find()) {
+            int n = number(m.group(1));
+            if (n > 0) return n;
+        }
+        m = ORDINAL_SEASON.matcher(title);
+        if (m.find()) {
+            int n = number(m.group(1));
+            if (n > 0) return n;
+        }
+        m = WORD_SEASON.matcher(title);
+        if (m.find()) {
+            int n = ordinalWord(m.group(1));
+            if (n > 0) return n;
+        }
+        m = PART_SEASON.matcher(title);
+        if (m.find()) {
+            int n = number(m.group(1));
+            if (n > 0) return n;
+        }
+        m = ROMAN_SEASON.matcher(title);
+        if (m.find()) {
+            int n = roman(m.group(1));
+            if (n > 0) return n;
+        }
+        // An episode marker at the end ("Base Show EP 10", "86 E08") is an
+        // episode, not a season. Without this, season evidence from a bare
+        // trailing number would reject every candidate the file could match.
+        if (EP_TAIL.matcher(title).find()) return -1;
+        // Bare trailing season number, but only after a separator and a letter,
+        // so a purely numeric title such as "86" is never read as season 86.
+        m = BARE_SEASON.matcher(title);
+        if (m.find()) {
+            int n = number(m.group(1));
+            if (n > 0) return n;
+        }
+        if (UNNUMBERED_MARKER.matcher(title).find()) return 0;
+        // MyAnimeList marks continuation series with a trailing glyph
+        // ("Gintama'", "Gintama\u00b0"); it must lose to the base entry.
+        if (GLYPH_MARKER.matcher(title).find()) return 0;
+        return -1;
+    }
+
+    private static final java.util.regex.Pattern S_SEASON =
+            java.util.regex.Pattern.compile("(?i)(?<![A-Za-z0-9])s\\s*[-_.]?\\s*(\\d{1,2})(?!\\d)");
+    private static final java.util.regex.Pattern ORDINAL_SEASON =
+            java.util.regex.Pattern.compile("(?i)\\b(\\d{1,2})(?:st|nd|rd|th)\\s+season\\b");
+    private static final java.util.regex.Pattern WORD_SEASON =
+            java.util.regex.Pattern.compile("(?i)\\b(second|third|fourth|fifth|sixth)\\s+season\\b");
+    private static final java.util.regex.Pattern PART_SEASON =
+            java.util.regex.Pattern.compile("(?i)\\bpart\\s*[-_.]?\\s*(\\d{1,2})(?!\\d)");
+    private static final java.util.regex.Pattern ROMAN_SEASON =
+            java.util.regex.Pattern.compile("\\b(II|III|IV|V|VI)\\b");
+    private static final java.util.regex.Pattern BARE_SEASON =
+            java.util.regex.Pattern.compile("(?<=[A-Za-z\\u0600-\\u06FF])[\\s._\\-]+(\\d{1,2})\\s*$");
+    private static final java.util.regex.Pattern EP_TAIL =
+            java.util.regex.Pattern.compile("(?i)\\b(?:ep(?:isode)?|e)\\s*[-_.]?\\s*\\d{1,3}\\s*$");
+    private static final java.util.regex.Pattern UNNUMBERED_MARKER =
+            java.util.regex.Pattern.compile("(?i)\\b(movie|gekijouban|recap|gaiden|special|ova|ona)\\b");
+    /** True for a MAL side entry, which can never be the numbered season. */
+    static boolean sideEntry(String title) {
+        return title != null && UNNUMBERED_MARKER.matcher(title).find();
+    }
+    private static final java.util.regex.Pattern GLYPH_MARKER =
+            java.util.regex.Pattern.compile("['\u2019\u00b0\u2032\u2033]+\\s*$");
+    private static int number(String s) {
+        try {
+            int n = Integer.parseInt(s);
+            return (n >= 1 && n <= 12) ? n : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    private static int ordinalWord(String s) {
+        switch (s.toLowerCase(java.util.Locale.ROOT)) {
+            case "second": return 2;
+            case "third": return 3;
+            case "fourth": return 4;
+            case "fifth": return 5;
+            case "sixth": return 6;
+            default: return -1;
+        }
+    }
+
+    private static int roman(String s) {
+        switch (s) {
+            case "II": return 2;
+            case "III": return 3;
+            case "IV": return 4;
+            case "V": return 5;
+            case "VI": return 6;
+            default: return -1;
+        }
+    }
 
     /**
      * Rank every candidate by similarity, best first. Signals combined per
@@ -172,6 +300,11 @@ public class Matcher {
      * is penalised, so a too-short season cannot win over the full series.
      */
     public static List<Scored> rank(JSONArray data, String want, int ep) throws Exception {
+        return rank(data, want, ep, -1, want);
+    }
+
+    public static List<Scored> rank(JSONArray data, String want, int ep,
+                                     int season, String guardTitle) throws Exception {
         List<Scored> out = new ArrayList<>();
         if (data == null) return out;
         String w = norm(want);
@@ -193,7 +326,7 @@ public class Matcher {
                 s = Math.max(s, score(want, w, alt.optString("en", "")));
                 s = Math.max(s, score(want, w, alt.optString("ja", "")));
             }
-            s = adjust(s, want, t, ep, numEp, mediaType, status);
+            s = adjust(s, want, t, ep, numEp, mediaType, status, season, guardTitle);
             Result r = new Result();
             r.id = node.getInt("id");
             r.title = t;
@@ -214,14 +347,32 @@ public class Matcher {
      */
     static double adjust(double s, String want, String candTitle, int ep,
                          int numEp, String mediaType, String status) {
+        return adjust(s, want, candTitle, ep, numEp, mediaType, status, -1, want);
+    }
+
+    static double adjust(double s, String want, String candTitle, int ep,
+                         int numEp, String mediaType, String status,
+                         int fileSeason, String guardTitle) {
         // Cannot hold episode N of an entry that only has fewer than N.
         if (ep > 0 && numEp > 0 && numEp < ep) s *= 0.30;
         // An entry that has not aired cannot contain a file we already have.
         if ("not_yet_aired".equals(status)) s *= 0.20;
         // A multi-episode file is never a movie.
         if (ep > 1 && "movie".equals(mediaType)) s *= 0.30;
-        // Later season / part / movie only when the file names it too.
-        if (!hasEntryMarker(want) && hasEntryMarker(candTitle)) s *= 0.45;
+        // Season evidence from the FILENAME (S02E05, "2_08", trailing "S2") and
+        // the original on-device title beats an alias-rewritten search query.
+        int w = fileSeason > 0 ? fileSeason : seasonOf(guardTitle);
+        int c = seasonOf(candTitle);
+        if (w > 0) {
+            if (c > 0 && c != w) s *= 0.30;        // a different NUMBERED season
+            if (w > 1 && c < 0) s *= 0.45;         // base series for an S2+ file
+            if (sideEntry(candTitle)) s *= 0.30;   // an OVA/movie is not a season
+        } else if (w == 0) {
+            // Unnumbered marker on the file (glyph / movie): the old scorer
+            // treated a marker as present and applied no sequel penalty.
+        } else if (c >= 0) {
+            s *= 0.45;                              // sequel not named by the file
+        }
         return s;
     }
 

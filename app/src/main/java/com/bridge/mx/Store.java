@@ -327,6 +327,31 @@ public class Store {
         dirty();
     }
 
+    /**
+     * One-time upgrade of rows matched before the season guard existed. Only a
+     * row whose stored MAL entry contradicts the season evidence in its own
+     * filename is invalidated; every other match (and all watch history) is
+     * left alone. The row is re-matched by the normal search path afterwards.
+     */
+    public static synchronized int rematchSeasonSuspects() {
+        int n = 0;
+        for (Row r : rows.values()) {
+            if (r.matchId <= 0 || r.matchTitle == null || r.matchTitle.isEmpty()) continue;
+            EpisodeParser.Parsed fresh = EpisodeParser.parse(r.title);
+            // Use the FRESH parse, not the stored parsedTitle: the stored key was
+            // produced by the old parser and can still carry "FHD" / group tags,
+            // which would look like a season mismatch on an already-correct row.
+            if (!Matcher.seasonMismatch(fresh.title, r.matchTitle, fresh.season)) continue;
+            r.matchId = -1;
+            r.matchTitle = "";
+            r.numEp = -1;
+            r.matchTried = "";   // allow the season-aware matcher to run again
+            n++;
+        }
+        if (n > 0) dirty();
+        return n;
+    }
+
     /** Copy an existing sibling row's MAL match onto an unmatched row. */
     private static void inheritSeriesMatch(Row r) {
         if (r.parsedTitle == null || r.parsedTitle.isEmpty()) return;

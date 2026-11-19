@@ -53,4 +53,14 @@ public interface MatchBrain {
      * @return index into {@code candidates} (0-based), or -1 for "none fit"
      */
     int pick(String want, int ep, List<Candidate> candidates);
+
+    /**
+     * Season-aware variant. Implementations that ignore the extra evidence can
+     * keep the three-argument implementation; the grounded LLM uses it to tell
+     * a base series from a season/part named in the filename.
+     */
+    default int pick(String want, int ep, List<Candidate> candidates,
+                     int season, String originalTitle) {
+        return pick(want, ep, candidates);
+    }
 }

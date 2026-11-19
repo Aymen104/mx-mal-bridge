@@ -37,10 +37,13 @@ public final class TitleTools {
     private static final Pattern NON_KEY =
             Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
     private static final Pattern COMBINING_MARKS = Pattern.compile("\\p{M}+");
+    // CJK Unified Ideographs (U+4E00-U+9FFF) are KEPT: dropping them made
+    // norm(葬送のフリーレン)="" so a Japanese filename could never match MAL's own
+    // Japanese "ja" alternative title. Kana stay folded; kanji compare directly.
     private static final Pattern NON_LOOSE =
-            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+");
+            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096\u4E00-\u9FFF]+");
     private static final Pattern TOKEN_SPLIT =
-            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096]+");
+            Pattern.compile("[^a-z0-9\u0600-\u06FF\u3041-\u3096\u4E00-\u9FFF]+");
 
     /**
      * Legacy key: lower-cased, ASCII alphanumerics plus the base Arabic block,

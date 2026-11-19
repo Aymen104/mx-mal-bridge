@@ -11,7 +11,10 @@ import java.util.Map;
 /** Persists the learned alias table in the app's "cfg" preferences. */
 public class AliasStore {
 
-    private static final String KEY = "learned_aliases";
+    // New namespace: the old table could contain season-collapsed entries learned
+    // from wrong-season matches. The old JSON stays in cfg.xml untouched, so no
+    // user data is deleted; it is simply no longer trusted.
+    private static final String KEY = "learned_aliases_v2";
 
     public static void load(Context c) {
         try {

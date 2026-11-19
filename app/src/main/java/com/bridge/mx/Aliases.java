@@ -26,6 +26,8 @@ public class Aliases {
 
     private static final Map<String, String> BUILTIN = new LinkedHashMap<>();
     private static final Map<String, String> LEARNED = new LinkedHashMap<>();
+    /** Bound the table: it is serialized in full after every successful match. */
+    private static final int MAX_LEARNED = 400;
 
     /** Same "letters+digits+base Arabic" reduction used everywhere for identity. */
     private static final Pattern NON_KEY = Pattern.compile("[^a-z0-9\u0600-\u06FF]+");
@@ -41,7 +43,10 @@ public class Aliases {
     public static synchronized String apply(String title) {
         if (title == null) return "";
         String n = norm(title);
-        String hit = lookup(LEARNED, n);
+        // Learned keys are exact: peeling "s2" here used to rewrite "Gin S2" to
+        // the S1 canonical title, hiding the season from the matcher. Only the
+        // deliberate built-in shorthands keep the season-insensitive lookup.
+        String hit = LEARNED.get(n);
         if (hit == null) hit = lookup(BUILTIN, n);
         return hit != null ? hit : title;
     }
@@ -49,8 +54,12 @@ public class Aliases {
     /** Remember that a shorthand resolves to a canonical title. */
     public static synchronized void learn(String shorthand, String canonical) {
         if (shorthand == null || canonical == null || canonical.isEmpty()) return;
-        String k = SEASON_TAIL.matcher(norm(shorthand)).replaceFirst("");
+        String k = norm(shorthand);
         if (k.length() < 3) return;
+        if (!LEARNED.containsKey(k) && LEARNED.size() >= MAX_LEARNED) {
+            // LinkedHashMap insertion order: evict the oldest, never the just-used.
+            LEARNED.remove(LEARNED.keySet().iterator().next());
+        }
         LEARNED.put(k, canonical);
     }
 
@@ -62,6 +71,9 @@ public class Aliases {
     /** Seed a learned alias (used when reloading from storage). */
     public static synchronized void putLearned(String key, String canonical) {
         if (key == null || key.isEmpty() || canonical == null || canonical.isEmpty()) return;
+        if (!LEARNED.containsKey(key) && LEARNED.size() >= MAX_LEARNED) {
+            LEARNED.remove(LEARNED.keySet().iterator().next());
+        }
         LEARNED.put(key, canonical);
     }
 
