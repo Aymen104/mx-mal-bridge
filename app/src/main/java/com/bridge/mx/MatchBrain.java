@@ -22,17 +22,25 @@ public interface MatchBrain {
         public final int numEp;
         public final String mediaType;
         public final String status;
+        /** MAL alternative names (English / Japanese / synonyms), " | " separated. */
+        public final String alts;
 
         public Candidate(int id, String title, int numEp) {
-            this(id, title, numEp, "", "");
+            this(id, title, numEp, "", "", "");
         }
 
         public Candidate(int id, String title, int numEp, String mediaType, String status) {
+            this(id, title, numEp, mediaType, status, "");
+        }
+
+        public Candidate(int id, String title, int numEp, String mediaType, String status,
+                         String alts) {
             this.id = id;
             this.title = title;
             this.numEp = numEp;
             this.mediaType = mediaType == null ? "" : mediaType;
             this.status = status == null ? "" : status;
+            this.alts = alts == null ? "" : alts;
         }
     }
 

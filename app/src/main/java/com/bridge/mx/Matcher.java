@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -22,6 +23,14 @@ public class Matcher {
         public String mediaType = "";
         /** MAL airing status: "finished_airing", "currently_airing", "not_yet_aired". */
         public String status = "";
+        /**
+         * MAL alternative titles (English, Japanese and synonyms), joined by
+         * " | ". A file often uses one of these instead of the canonical title
+         * ("Reincarnated as a Sword" vs "Tensei shitara Ken deshita II"), so the
+         * name must travel with the candidate into the season guard and the
+         * grounded LLM prompt, not be thrown away after scoring.
+         */
+        public String alts = "";
     }
 
     /** A Result plus the deterministic score that produced it. */
@@ -116,7 +125,8 @@ public class Matcher {
             int n = Math.min(pool.size(), BRAIN_TOP_N);
             for (int i = 0; i < n; i++) {
                 Result r = pool.get(i).r;
-                cands.add(new MatchBrain.Candidate(r.id, r.title, r.numEp, r.mediaType, r.status));
+                cands.add(new MatchBrain.Candidate(r.id, r.title, r.numEp,
+                        r.mediaType, r.status, r.alts));
             }
             int pick = brain.pick(want, ep, cands, season, guardTitle);
             if (pick >= 0 && pick < n) return pool.get(pick).r;
@@ -154,7 +164,7 @@ public class Matcher {
         if ("not_yet_aired".equals(r.status)) return false;
         if (ep > 0 && r.numEp > 0 && r.numEp < ep) return false;
         if (ep > 1 && "movie".equals(r.mediaType)) return false;
-        if (seasonMismatch(guardTitle, r.title, season)) return false;
+        if (seasonMismatch(guardTitle, r, season)) return false;
         return true;
     }
 
@@ -167,18 +177,53 @@ public class Matcher {
      * (movie/recap/trailing glyph), 1..12 = numbered season/part.
      */
     static boolean seasonMismatch(String fileTitle, String candTitle, int fileSeason) {
+        return mismatch(fileTitle, candTitle, seasonOf(candTitle), fileSeason,
+                sideEntry(candTitle));
+    }
+
+    /** Same test using the canonical title AND all of the candidate's aliases. */
+    static boolean seasonMismatch(String fileTitle, Result cand, int fileSeason) {
+        if (cand == null) return false;
+        return mismatch(fileTitle, cand.title, seasonOfAny(cand), fileSeason,
+                sideEntry(cand.title));
+    }
+
+    private static boolean mismatch(String fileTitle, String candTitle, int c,
+                                    int fileSeason, boolean side) {
         if (candTitle == null || candTitle.isEmpty()) return false;
         int w = fileSeason > 0 ? fileSeason : seasonOf(fileTitle);
-        int c = seasonOf(candTitle);
-        if (w < 0) return c >= 0;             // no marker on file: reject any sequel
+        // No marker on the file: reject a later season (or a glyph continuation),
+        // but "Season 1" is the BASE entry and must stay eligible. MAL aliases
+        // now supply season evidence, so this distinction matters: an alias such
+        // as "Show Season 1" must not hide the base series from an unmarked file.
+        if (w < 0) return c > 1 || c == 0;
         if (w == 0) return false;             // unnumbered marker present: no constraint
         if (c == w) return false;             // exact season match
         // A trailing glyph ("Gintama'", "Gintama°") is MAL's way of naming the
         // next season, so it IS a valid answer for an S2 file. A side entry
         // (OVA / movie / special / recap) is not, even though both score 0.
-        if (c == 0 && !sideEntry(candTitle)) return false;
+        if (c == 0 && !side) return false;
         if (w == 1 && c < 0) return false;    // S01 is normally the base MAL entry
         return true;                          // base for S2+, or a different season
+    }
+
+    /**
+     * Season evidence from any name MAL gives the entry. The English alias for
+     * 53913 is "Reincarnated as a Sword Season 2" while its canonical title is
+     * "Tensei shitara Ken deshita II" — both must count as season 2.
+     */
+    static int seasonOfAny(Result cand) {
+        return seasonOfNames(cand.title, cand.alts);
+    }
+
+    static int seasonOfNames(String title, String alts) {
+        int s = seasonOf(title);
+        if (s > 0 || alts == null || alts.isEmpty()) return s;
+        for (String a : alts.split(" \\| ")) {
+            int v = seasonOf(a);
+            if (v > 0) return v;
+        }
+        return s;
     }
 
     /**
@@ -315,24 +360,47 @@ public class Matcher {
             String mediaType = node.optString("media_type", "");
             String status = node.optString("status", "");
             double s = score(want, w, t);
+            // Keep every alias MAL supplies, not just the best-scoring one: the
+            // LLM prompt and the season guard need all of them ("Overgeared",
+            // "Reincarnated as a Sword Season 2", "葬送のフリーレン 第2期", ...).
+            LinkedHashSet<String> names = new LinkedHashSet<>();
             JSONObject alt = node.optJSONObject("alternative_titles");
             if (alt != null) {
+                // English first: it is the alias most often used by downloaded
+                // filenames, and the list below is capped for the LLM prompt.
+                String en = alt.optString("en", "");
+                String ja = alt.optString("ja", "");
+                if (!en.isEmpty()) { names.add(en); s = Math.max(s, score(want, w, en)); }
+                if (!ja.isEmpty()) { names.add(ja); s = Math.max(s, score(want, w, ja)); }
                 JSONArray syn = alt.optJSONArray("synonyms");
                 if (syn != null) {
                     for (int k = 0; k < syn.length(); k++) {
-                        s = Math.max(s, score(want, w, syn.getString(k)));
+                        String v = syn.optString(k, "");
+                        if (!v.isEmpty()) {
+                            names.add(v);
+                            s = Math.max(s, score(want, w, v));
+                        }
                     }
                 }
-                s = Math.max(s, score(want, w, alt.optString("en", "")));
-                s = Math.max(s, score(want, w, alt.optString("ja", "")));
             }
-            s = adjust(s, want, t, ep, numEp, mediaType, status, season, guardTitle);
+            // Keep the prompt small for a 1.5B model: English and Japanese are
+            // collected first, so the most useful aliases are never dropped.
+            StringBuilder altSb = new StringBuilder();
+            int shown = 0;
+            for (String v : names) {
+                if (shown++ >= 6) break;
+                if (altSb.length() > 0) altSb.append(" | ");
+                altSb.append(v);
+            }
+            String alts = altSb.toString();
+            s = adjust(s, want, t, ep, numEp, mediaType, status, season, guardTitle, alts);
             Result r = new Result();
             r.id = node.getInt("id");
             r.title = t;
             r.numEp = numEp;
             r.mediaType = mediaType;
             r.status = status;
+            r.alts = alts;
             out.add(new Scored(r, s));
         }
         Collections.sort(out, Comparator.comparingDouble((Scored x) -> x.s).reversed());
@@ -347,12 +415,19 @@ public class Matcher {
      */
     static double adjust(double s, String want, String candTitle, int ep,
                          int numEp, String mediaType, String status) {
-        return adjust(s, want, candTitle, ep, numEp, mediaType, status, -1, want);
+        return adjust(s, want, candTitle, ep, numEp, mediaType, status, -1, want, "");
     }
 
     static double adjust(double s, String want, String candTitle, int ep,
                          int numEp, String mediaType, String status,
                          int fileSeason, String guardTitle) {
+        return adjust(s, want, candTitle, ep, numEp, mediaType, status,
+                fileSeason, guardTitle, "");
+    }
+
+    static double adjust(double s, String want, String candTitle, int ep,
+                         int numEp, String mediaType, String status,
+                         int fileSeason, String guardTitle, String alts) {
         // Cannot hold episode N of an entry that only has fewer than N.
         if (ep > 0 && numEp > 0 && numEp < ep) s *= 0.30;
         // An entry that has not aired cannot contain a file we already have.
@@ -361,17 +436,22 @@ public class Matcher {
         if (ep > 1 && "movie".equals(mediaType)) s *= 0.30;
         // Season evidence from the FILENAME (S02E05, "2_08", trailing "S2") and
         // the original on-device title beats an alias-rewritten search query.
+        // The candidate's ALIASES are season evidence too: MAL often puts the
+        // marker only in the English name ("That Time I Got Reincarnated as a
+        // Slime Season 2") or only in the canonical name ("... 2nd Season").
         int w = fileSeason > 0 ? fileSeason : seasonOf(guardTitle);
-        int c = seasonOf(candTitle);
+        int c = seasonOfNames(candTitle, alts);
+        boolean side = sideEntry(candTitle);
         if (w > 0) {
             if (c > 0 && c != w) s *= 0.30;        // a different NUMBERED season
             if (w > 1 && c < 0) s *= 0.45;         // base series for an S2+ file
-            if (sideEntry(candTitle)) s *= 0.30;   // an OVA/movie is not a season
+            if (side) s *= 0.30;                   // an OVA/movie is not a season
         } else if (w == 0) {
             // Unnumbered marker on the file (glyph / movie): the old scorer
             // treated a marker as present and applied no sequel penalty.
-        } else if (c >= 0) {
-            s *= 0.45;                              // sequel not named by the file
+        } else if (c > 1 || c == 0) {
+            s *= 0.45;                              // sequel not named by the file;
+                                                    // c==1 ("Season 1") is the base
         }
         return s;
     }

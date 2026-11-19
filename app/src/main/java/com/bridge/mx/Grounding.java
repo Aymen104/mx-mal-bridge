@@ -12,8 +12,9 @@ import java.util.List;
  * to pick one index or reject them all.
  *
  * <p>Each candidate also carries MAL's own structure (media type, airing
- * status, episode count) so the model can tell a series apart from its
- * sequels/prequels/OVAs/movies.
+ * status, episode count) and all of MAL's alternative titles (English,
+ * Japanese, synonyms) so a file named "Overgeared" or "Reincarnated as a
+ * Sword" can be recognised against a canonical title that shares no words.
  */
 public class Grounding {
 
@@ -48,6 +49,9 @@ public class Grounding {
         for (int i = 0; i < cands.size(); i++) {
             MatchBrain.Candidate c = cands.get(i);
             sb.append(i).append(". ").append(c.title);
+            if (c.alts != null && !c.alts.isEmpty()) {
+                sb.append(" [also known as: ").append(c.alts).append(']');
+            }
             sb.append(" (id=").append(c.id);
             if (c.numEp > 0) sb.append(", episodes=").append(c.numEp);
             sb.append(")");

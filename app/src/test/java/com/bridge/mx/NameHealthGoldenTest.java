@@ -208,4 +208,131 @@ public class NameHealthGoldenTest {
         assertTrue(p.contains("Season named by the file: 2"));
         assertTrue(p.contains("On-device filename title:"));
     }
+
+    // ---- MAL alternative titles: en / ja / synonyms travel with the candidate ----
+
+    private static JSONObject nodeWithAlts(int id, String title, int numEp,
+                                           String en, String ja, String... syn)
+            throws Exception {
+        JSONObject wrapper = node(id, title, numEp);
+        JSONObject n = wrapper.getJSONObject("node");
+        JSONObject alt = new JSONObject();
+        if (en != null && !en.isEmpty()) alt.put("en", en);
+        if (ja != null && !ja.isEmpty()) alt.put("ja", ja);
+        if (syn.length > 0) {
+            JSONArray a = new JSONArray();
+            for (String s : syn) a.put(s);
+            alt.put("synonyms", a);
+        }
+        n.put("alternative_titles", alt);
+        return wrapper;
+    }
+
+    /** MAL 64340: canonical "Tempal: Item no Chikara", English "Overgeared". */
+    @Test
+    public void englishAliasWithUnrelatedCanonicalStillMatches() throws Exception {
+        JSONArray a = new JSONArray().put(nodeWithAlts(64340, "Tempal: Item no Chikara", 12,
+                "Overgeared", "テムパル ～アイテムの力～", "템빨"));
+        Matcher.Result r = Matcher.best(a, "Overgeared", 8);
+        assertNotNullResult(r);
+        assertEquals(64340, r.id);
+        assertTrue("alts=" + r.alts, r.alts.contains("Overgeared"));
+    }
+
+    /** MAL 62524: the '#' and the English alias are both needed. */
+    @Test
+    public void englishAliasMatchesHashPrefixedSeries() throws Exception {
+        JSONArray a = new JSONArray().put(nodeWithAlts(62524, "#Zombie Sagashitemasu", 12,
+                "#I'm Looking For a Zombie", "#ゾンビさがしてます"));
+        Matcher.Result r = Matcher.best(a, "I'm Looking For a Zombie", 6);
+        assertNotNullResult(r);
+        assertEquals(62524, r.id);
+    }
+
+    /**
+     * MAL 59978: the season marker lives in the canonical name AND in both
+     * aliases. All three must survive ranking so the season guard and the LLM
+     * see the same evidence.
+     */
+    @Test
+    public void rankKeepsEveryMalAliasOnTheResult() throws Exception {
+        JSONArray a = new JSONArray().put(nodeWithAlts(59978,
+                "Sousou no Frieren 2nd Season", 28,
+                "Frieren: Beyond Journey's End Season 2", "葬送のフリーレン 第2期",
+                "Frieren at the Funeral Season 2"));
+        Matcher.Scored s = Matcher.rank(a, "Frieren: Beyond Journey's End", 3, 2,
+                "Frieren Beyond Journey's End S2").get(0);
+        assertTrue("alts=" + s.r.alts,
+                s.r.alts.contains("Frieren: Beyond Journey's End Season 2"));
+        assertTrue("alts=" + s.r.alts, s.r.alts.contains("葬送のフリーレン 第2期"));
+        assertTrue("alts=" + s.r.alts, s.r.alts.contains("Frieren at the Funeral Season 2"));
+        assertEquals(2, Matcher.seasonOfAny(s.r));
+    }
+
+    /**
+     * The canonical name may carry NO season marker at all ("Gintama"); MAL's
+     * English alias ("Gintama Season 2") is then the only season evidence. The
+     * guard must use it, or an S2 file is accepted onto the base series.
+     */
+    @Test
+    public void aliasSuppliesSeasonToTheGuard() {
+        Matcher.Result r = new Matcher.Result();
+        r.title = "Gintama";
+        r.alts = "Gintama Season 2 | 銀魂'";
+        assertEquals(2, Matcher.seasonOfNames(r.title, r.alts));
+        assertFalse(Matcher.seasonMismatch("Gintama S2", r, 2));
+        assertTrue(Matcher.seasonMismatch("Gintama S3", r, 3));
+
+        // MAL 53913: canonical "Tensei shitara Ken deshita II" already carries
+        // season 2, and the English alias agrees - both channels must work.
+        r.title = "Tensei shitara Ken deshita II";
+        r.alts = "Reincarnated as a Sword Season 2 | 転生したら剣でした II";
+        assertEquals(2, Matcher.seasonOfAny(r));
+        assertFalse(Matcher.seasonMismatch("Reincarnated as a Sword S2", r, 2));
+    }
+
+    @Test
+    public void aliasSeasonPenalisesBaseSeriesForS2File() throws Exception {
+        JSONArray a = new JSONArray()
+                .put(nodeWithAlts(4001, "Example Show", 12, "Example Show", "", ""))
+                .put(nodeWithAlts(4002, "Example Show", 12,
+                        "Example Show 2nd Season", "例のショー 第2期"));
+        Matcher.Result r = Matcher.bestWithBrain(a, "Example Show S2", 5, null, 2,
+                "Example Show S2");
+        assertNotNullResult(r);
+        assertEquals(4002, r.id);
+        // With no season evidence in the filename, the file belongs to the
+        // base series - the alias-only season on 4002 must not steal it.
+        Matcher.Result base = Matcher.best(a, "Example Show", 5);
+        assertNotNullResult(base);
+        assertEquals(4001, base.id);
+    }
+
+    /**
+     * A "Season 1" alias must NOT make the base series look like a sequel: an
+     * unmarked file has to keep matching it. Aliases now feed the season guard,
+     * so this distinction is what keeps them safe on the real catalogue.
+     */
+    @Test
+    public void seasonOneAliasDoesNotHideTheBaseSeries() throws Exception {
+        JSONArray a = new JSONArray()
+                .put(nodeWithAlts(5001, "Example Show", 12,
+                        "Example Show Season 1", "例のショー 第1期"));
+        Matcher.Result r = Matcher.best(a, "Example Show", 5);
+        assertNotNullResult(r);
+        assertEquals(5001, r.id);
+        assertEquals(1, Matcher.seasonOfAny(r));
+    }
+
+    @Test
+    public void groundingPromptIncludesMalAlternativeTitles() {
+        MatchBrain.Candidate c = new MatchBrain.Candidate(
+                64340, "Tempal: Item no Chikara", 12, "tv", "finished_airing",
+                "Overgeared | テムパル ～アイテムの力～ | 템빨");
+        String p = Grounding.buildPrompt("Overgeared", 8,
+                java.util.Collections.singletonList(c), 1, "Overgeared S01E08");
+        assertTrue("prompt=" + p, p.contains("also known as: Overgeared"));
+        assertTrue("prompt=" + p, p.contains("テムパル"));
+        assertTrue("prompt=" + p, p.contains("템빨"));
+    }
 }
